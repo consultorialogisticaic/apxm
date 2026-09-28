@@ -1,0 +1,35 @@
+name: apxm-ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    types: [opened, reopened, synchronize, ready_for_review]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: apxm-ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  service-gate:
+    # A self-hosted runner must never execute code from an untrusted fork.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, linux, x64, clic-build]
+    timeout-minutes: 120
+    steps:
+      - name: Checkout exact event revision
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Validate the locked Nix environment
+        run: nix flake check --all-systems --no-update-lock-file
+
+      - name: Run the APXM service-owner gate
+        run: nix develop --command dekk agents check-service

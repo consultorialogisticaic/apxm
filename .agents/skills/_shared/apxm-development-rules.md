@@ -19,8 +19,8 @@ when writing tests load `_shared/apxm-test-rules.md`.
 - `CARGO_TARGET_DIR=/tmp/apxm-target-$USER`. `/home` is shared WekaFS
   (50+ tenants); building there contends with other users and randomly
   fails (ENOSPC, invalid-rustc-cache SIGBUS).
-- `MLIR_DIR` / `LLVM_DIR` point at the dekk-managed MLIR/LLVM 22 conda
-  env (path `{project}/.dekk/env`).
+- `MLIR_DIR` / `LLVM_DIR` point at the LLVM/MLIR packages exposed by the
+  repository Nix shell.
 - `LLM_GATEWAY_KEY` comes from the shell `env:LLM_GATEWAY_KEY`; never
   hard-code, never commit.
 
@@ -70,5 +70,5 @@ After each phase of work, run the smallest correct check:
   *then* the test commands.
 - Touched the Python frontend? `dekk agents test-python-frontend`.
 
-Run `dekk agents doctor` if anything in `dekk env`, the conda env, or the
-binary toolchain feels off.
+Run `nix develop` first, then `dekk agents doctor` if anything in the
+Nix shell or binary toolchain feels off.

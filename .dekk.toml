@@ -4,28 +4,6 @@
 name = "agents"
 description = "MLIR compiler and runtime for agent graphs"
 
-[environment]
-type = "conda"
-path = "{project}/.dekk/env"
-name = "apxm"
-channels = ["conda-forge"]
-
-[environment.packages]
-mlir = "22"
-libclang13 = "22"
-clang = "22"
-gxx_linux-64 = ""
-python = "3.11"
-pytest = ""
-pytest-asyncio = ""
-cmake = ""
-ninja = ""
-uv = ""
-nodejs = "22"
-# The repository's own tooling shells out to `git -C`, which needs git >= 1.8.5.
-# Several development hosts carry 1.8.3.1, where that is a usage error, so the
-# environment pins a modern git rather than depending on whatever the host ships.
-git = ""
 
 [tools]
 cmake = { command = "cmake", version = ">=3.20" }
@@ -43,16 +21,6 @@ NPM_CONFIG_CACHE = "{project}/.dekk/npm-cache"
 PIP_CACHE_DIR = "{project}/.dekk/pip-cache"
 UV_CACHE_DIR = "{project}/.dekk/uv-cache"
 
-MLIR_DIR = "{environment}/lib/cmake/mlir"
-LLVM_DIR = "{environment}/lib/cmake/llvm"
-MLIR_PREFIX = "{environment}"
-LLVM_PREFIX = "{environment}"
-CC = "{environment}/bin/x86_64-conda-linux-gnu-gcc"
-CXX = "{environment}/bin/x86_64-conda-linux-gnu-g++"
-CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER = "{environment}/bin/clang"
-RUSTUP_HOME = "{home}/.rustup"
-CARGO_HOME = "{home}/.cargo"
-RUSTUP_TOOLCHAIN = "1.91.1"
 # Intentionally NOT setting APXM_HOME: it's the user data root
 # (default ~/.apxm), and pinning it to {project} broke roaming-bucket
 # resolution. Override per-shell or via .apxm/config.toml instead.
@@ -60,7 +28,6 @@ PYTHONPATH = "{project}/crates/compiler/frontend/python:{project}/tools"
 APXM_TYPESCRIPT_FRONTEND_PACKAGE = "{project}/crates/compiler/frontend/typescript"
 APXM_TYPESCRIPT_AGENT_PACKAGING_PACKAGE = "{project}/crates/tools/cli/agent-packaging"
 APXM_PYTHON_AGENT_PACKAGING_PACKAGE = "{project}/crates/tools/cli/agent-packaging-python"
-LD_LIBRARY_PATH = "{project}/target/release/lib:{project}/target/release:{environment}/lib"
 
 [paths]
 bin = [
@@ -69,10 +36,10 @@ bin = [
 	"{home}/.local/bin",
 	"{home}/.cargo/bin",
 ]
-lib = ["{project}/target/release/lib", "{environment}/lib"]
+lib = ["{project}/target/release/lib"]
 
 [commands]
-compile-source-bundle = { run = "env -u CC -u CXX python tools/scripts/cargo.py run -p apxm-source-port --example compile_source_bundle -- crates/compiler/frontend/python crates/compiler/frontend/typescript .dekk/env/bin/python .dekk/env/bin/node", description = "Compile one stdin SourceBundleRequest through installed frontends and print its committed executable artifact", group = "Compilation" }
+compile-source-bundle = { run = "env -u CC -u CXX python tools/scripts/cargo.py run -p apxm-source-port --example compile_source_bundle -- crates/compiler/frontend/python crates/compiler/frontend/typescript python node", description = "Compile one stdin SourceBundleRequest through installed frontends and print its committed executable artifact", group = "Compilation" }
 build = { run = "python tools/scripts/cargo.py build -p apxm-cli --features driver,metrics --release", description = "Build the APXM CLI", skill = true, group = "Build & Test" }
 build-dialect = { run = "python tools/scripts/cargo.py build-dialect", description = "Rebuild MLIR dialect (TableGen + C++ + Rust) after editing .td or .cpp files", skill = true, group = "Build & Test" }
 # The workspace includes source-capture tests that launch the isolated Python
@@ -80,18 +47,11 @@ build-dialect = { run = "python tools/scripts/cargo.py build-dialect", descripti
 # not overload the host with concurrent frontend interpreters and turn valid
 # submitted source into nondeterministic capture diagnostics.
 test = { run = "python tools/scripts/check_frontend_parity.py && python tools/scripts/cargo.py test --workspace --exclude apxm-compiler --exclude apxm-cli -- --test-threads=1 && python -m pytest crates/compiler/frontend/python/tests_program -q", description = "Run frontend parity, workspace, and canonical authoring tests", skill = true, group = "Build & Test" }
-# This deliberately does NOT carry the `env -u CC -u CXX` of the frontend
-# commands below. Those unset the pair so a PyO3/napi module is not linked by the
-# conda cross-compiler wrapper; this command instead builds the MLIR dialect,
-# where the pair is what CMake needs. Unsetting it cannot fall back to the Dekk
-# toolchain, because [environment.packages] installs no unsuffixed `cc`, `c++`,
-# `gcc`, `g++`, or `clang++` — only `clang`, `clang++-22`, and the
-# `x86_64-conda-linux-gnu-*` pair. So the unset always dropped CMake onto the
-# host compiler, which on an RHEL7 development host is GCC 4.8.5 and fails
-# LLVM's `CheckCompilerVersion` (>= 7.4). Keeping the pair set also keeps macOS
-# working: cargo.py's Darwin fixup rewrites a linux-gnu CC/CXX to native clang
-# only when they ARE set, so the unset defeated the very fixup it looked like it
-# was there for.
+# The Nix shell exports native Clang and the pinned LLVM/MLIR package.
+# Frontend commands below unset CC/CXX because their PyO3/napi modules use
+# the host-language linker path; compiler and dialect commands retain the
+# shell compiler so CMake sees the same toolchain on every supported host.
+
 test-compiler = { run = "python tools/scripts/cargo.py test -p apxm-compiler --features mlir", description = "Run compiler AIR builder and pipeline tests", group = "Build & Test" }
 test-source-port = { run = "env -u CC -u CXX python tools/scripts/cargo.py test -p apxm-source-port", description = "Run source-bundle compiler port conformance", group = "Build & Test" }
 test-compilation-protocol = { run = "env -u CC -u CXX python tools/scripts/cargo.py test -p apxm-compilation-protocol", description = "Run Compilation Service protocol vectors", group = "Build & Test" }

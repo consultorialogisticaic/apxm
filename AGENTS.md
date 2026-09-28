@@ -114,12 +114,18 @@ stay here.
 
 ## 5. Build, test, codegen
 
-Required env (set by `dekk agents doctor` + the conda env):
+Required env (provided by `nix develop` and checked by `dekk agents doctor`):
 
 - `CARGO_TARGET_DIR=/tmp/apxm-target-$USER` — `/home` is shared WekaFS,
   builds there contend with 50+ other users and randomly fail.
-- `MLIR_DIR`, `LLVM_DIR` — set by the dekk env (MLIR/LLVM 22).
-- `LLM_GATEWAY_KEY` — comes from `env:LLM_GATEWAY_KEY`; never commit.
+- `MLIR_DIR`, `LLVM_DIR` — set by the Nix shell (the pinned Nixpkgs LLVM/MLIR package).
+- `LLM_GATEWAY_KEY` — comes from the shell `env:LLM_GATEWAY_KEY`; never commit.
+
+Enter the reproducible shell before running any owner command:
+
+```bash
+nix develop
+```
 
 Standard cadences:
 

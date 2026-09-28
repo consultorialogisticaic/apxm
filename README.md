@@ -54,6 +54,52 @@ generates and checks the thin root adapters (`CLAUDE.md`, `CODEX.md`,
 `.claude/skills`) without writing global agent configuration. Edit `AGENTS.md`
 and `.agents/skills/` first, then run the adapter check for this checkout.
 
+## Reproducible Nix shell
+
+The repository publishes a locked Nix development shell for macOS ARM64 and
+Linux ARM64/AMD64. It supplies Dekk, the pinned Rust toolchain, Python,
+Node.js, LLVM/MLIR, and the native build tools; no Conda activation is needed.
+
+```bash
+nix develop
+dekk agents doctor
+dekk agents check
+```
+
+`nix flake check` validates the flake and its locked inputs. Service images
+remain a separate Docker concern and must be built for the target platform:
+
+```bash
+dekk agents build-images --platform linux/amd64
+```
+
+`MLIR_DIR` and `LLVM_DIR` are exported by the shell. The exact package
+versions come from `flake.lock`; update the lock only as an intentional
+toolchain change.
+
+## Release outputs
+
+APXM has two release products, with different consumers:
+
+- `package-release` is the owner-local, digest-bound binary package. It carries
+  both service executables, the Python native bridge, protocol descriptors,
+  schemas, and the source/owner/release manifests. Its manifest is the
+  consumer verification boundary; a directory or archive without that manifest
+  is not a release.
+- `build-images --platform linux/amd64` is the CLIC runtime product. It
+  builds both OCI images from the same source cohort and stamps the exact
+  service, manifest, frontend, owner, and schema digests into their labels.
+
+Pull-request workers may build and verify candidates, but MUST NOT publish
+runtime tags or receive production credentials. After merge, a trusted release
+worker builds the exact main SHA on `linux/amd64`, runs the owner qualification
+and image verification, publishes by digest to the private OCI registry, and
+opens a CLIC pin PR containing those digests. CLIC then consumes only the
+reviewed `name@sha256:<digest>` references; it never compiles APXM from a
+checkout during deployment.
+
+The Nix shell makes the toolchain reproducible. It is not itself a binary
+cache and does not replace the owner release manifest or OCI publication.
 ## Local service-image candidates
 
 Normal `dekk agents build-images` builds a clean release cohort and continues

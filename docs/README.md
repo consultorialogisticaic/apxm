@@ -62,7 +62,7 @@ versioned ids and filenames; foreign-owner contract ids such as
 `apxm.contract-common.v1` are intentionally outside that guard.
 
 ```bash
-dekk agents setup
+nix develop
 dekk agents doctor
 dekk agents check
 dekk agents check-deversion
