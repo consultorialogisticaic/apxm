@@ -403,7 +403,7 @@ fn spawn_with_timeout(
             format!(
                 "the declared {} authoring frontend driver could not start: {}",
                 frontend.wire(),
-                error.kind()
+                error
             ),
         )
     })?;
