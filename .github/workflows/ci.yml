@@ -12,6 +12,11 @@ on:
         required: true
         default: false
         type: boolean
+      publish_release_images:
+        description: Build, verify and push the Linux AMD64 service image pair
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -132,3 +137,65 @@ jobs:
             contracts/services/manifests/apxm.agents-service-release-manifest.v1.json
           if-no-files-found: error
           retention-days: 7
+
+  release-images:
+    needs: release-descriptors
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      inputs.prepare_release_descriptors && inputs.publish_release_images
+    runs-on: [self-hosted, linux, x64, clic-build]
+    timeout-minutes: 240
+    permissions:
+      packages: write
+    steps:
+      - name: Checkout exact event revision
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Build the Linux AMD64 service image pair
+        run: >-
+          nix develop --command dekk agents build-images
+          --platform linux/amd64
+          --repository-prefix ghcr.io/consultorialogisticaic/apxm
+
+      - name: Verify the built image pair from the consumer boundary
+        run: |
+          set -o pipefail
+          # shellcheck disable=SC2016
+          nix develop --command dekk agents verify-images \
+            --repository-prefix ghcr.io/consultorialogisticaic/apxm \
+            | tee image-evidence-verification.json
+
+      - name: Publish the immutable image pair
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REVISION: ${{ github.sha }}
+        run: |
+          # shellcheck disable=SC2016
+          nix develop --command bash -euo pipefail -c '
+            suffix="${REVISION:0:8}"
+            printf "%s" "$GHCR_TOKEN" | docker login ghcr.io \
+              -u "${{ github.actor }}" --password-stdin
+            for service in compilation-service runtime-service; do
+              repository="ghcr.io/consultorialogisticaic/apxm/$service"
+              docker tag "apxm/$service:$suffix" "$repository:$suffix"
+              docker push "$repository:$suffix"
+              docker buildx imagetools inspect "$repository:$suffix" \
+                > "image-evidence-$service.json"
+            done
+            docker logout
+          '
+
+      - name: Upload the verified image evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: apxm-release-images-${{ github.sha }}
+          path: |
+            image-evidence-verification.json
+            image-evidence-compilation-service.json
+            image-evidence-runtime-service.json
+          if-no-files-found: error
+          retention-days: 30
