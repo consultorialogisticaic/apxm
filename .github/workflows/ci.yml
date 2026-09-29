@@ -167,6 +167,7 @@ jobs:
           nix develop --command dekk agents build-images
           --platform linux/amd64
           --repository-prefix ghcr.io/consultorialogisticaic/apxm
+          --qualified-descriptor-overlay
 
       - name: Verify the built image pair from the consumer boundary
         run: |

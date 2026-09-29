@@ -78,6 +78,12 @@ TREE_DIGEST_LABEL = "io.apxm.source-tree-digest"
 PROVENANCE_DIGEST_LABEL = "io.apxm.source-provenance-digest"
 CANDIDATE_SCHEMA = "apxm.agents.service-images-candidate.v1"
 OWNER_SIDECAR_REL = OWNER_DESCRIPTOR_REL.with_suffix(".sha256")
+RELEASE_DESCRIPTOR_RELS = (
+    SOURCE_DESCRIPTOR_REL,
+    OWNER_DESCRIPTOR_REL,
+    OWNER_SIDECAR_REL,
+    RELEASE_MANIFEST_REL,
+)
 
 HEX40 = re.compile(r"^[0-9a-f]{40}$")
 DEFAULT_PLATFORM = "linux/arm64"
@@ -131,14 +137,25 @@ def declared_revision(root: Path) -> str:
     return revision
 
 
-def _require_publishable_checkout(root: Path, revision: str) -> None:
+def _require_publishable_checkout(
+    root: Path, revision: str, *, qualified_descriptor_overlay: bool = False
+) -> None:
     """Refuse to build an image from a tree that is not the cohort."""
 
     status = _run(["git", "-C", str(root), "status", "--porcelain"], capture=True)
-    if status.strip():
+    status_lines = {line for line in status.splitlines() if line}
+    allowed_overlay = {f" M {relative.as_posix()}" for relative in RELEASE_DESCRIPTOR_RELS}
+    if status_lines and not (
+        qualified_descriptor_overlay and status_lines <= allowed_overlay
+    ):
         raise ImageError(
             "cannot build service images from a dirty checkout; the image regenerates the "
             "cohort's descriptors and would not match the ones committed here"
+        )
+    head = _run(["git", "-C", str(root), "rev-parse", "HEAD"], capture=True).strip()
+    if qualified_descriptor_overlay and revision != head:
+        raise ImageError(
+            f"qualified release descriptors publish {revision}, not exact checkout {head}"
         )
     ancestry = subprocess.run(
         ["git", "-C", str(root), "merge-base", "--is-ancestor", revision, "HEAD"],
@@ -146,7 +163,6 @@ def _require_publishable_checkout(root: Path, revision: str) -> None:
         capture_output=True,
     )
     if ancestry.returncode != 0:
-        head = _run(["git", "-C", str(root), "rev-parse", "HEAD"], capture=True).strip()
         raise ImageError(
             f"the descriptors publish {revision}, which is not an ancestor of {head}; "
             "regenerate the descriptors before building images"
@@ -236,9 +252,14 @@ def build_images(
     prefix: str,
     services: tuple[str, ...],
     no_cache: bool = False,
+    qualified_descriptor_overlay: bool = False,
 ) -> dict[str, Any]:
     revision = declared_revision(root)
-    _require_publishable_checkout(root, revision)
+    _require_publishable_checkout(
+        root,
+        revision,
+        qualified_descriptor_overlay=qualified_descriptor_overlay,
+    )
     return {
         "schema": "apxm.agents.service-images-build.v1",
         "semantic_owner": "agents",
@@ -620,6 +641,11 @@ def main(argv: list[str] | None = None) -> int:
     build_parser.add_argument("--service", choices=tuple(SERVICES), action="append")
     build_parser.add_argument("--no-cache", action="store_true")
     build_parser.add_argument("--candidate", action="store_true", help="build an unpublished working-tree snapshot with exact source provenance")
+    build_parser.add_argument(
+        "--qualified-descriptor-overlay",
+        action="store_true",
+        help="allow only run-qualified descriptor files to differ from exact HEAD",
+    )
 
     verify_parser = subparsers.add_parser("verify", help="verify both service images as a consumer")
     verify_parser.add_argument("--repository-prefix", default=DEFAULT_REPOSITORY_PREFIX)
@@ -636,13 +662,15 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.mode == "build":
             builder = build_candidate_images if args.candidate else build_images
-            payload = builder(
-                root,
-                platform=args.platform,
-                prefix=args.repository_prefix,
-                services=services,
-                no_cache=args.no_cache,
-            )
+            build_args = {
+                "platform": args.platform,
+                "prefix": args.repository_prefix,
+                "services": services,
+                "no_cache": args.no_cache,
+            }
+            if not args.candidate:
+                build_args["qualified_descriptor_overlay"] = args.qualified_descriptor_overlay
+            payload = builder(root, **build_args)
         else:
             payload = (verify_candidate_images(root, args.candidate_provenance) if args.candidate_provenance
                 else verify_images(root, prefix=args.repository_prefix, services=services))

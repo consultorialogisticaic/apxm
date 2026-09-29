@@ -183,6 +183,53 @@ class ServiceImageContractTests(unittest.TestCase):
                 with self.assertRaisesRegex(self.images.ImageError, "dirty checkout"):
                     self.images.build_images(root, platform="linux/arm64", prefix="release", services=tuple(self.images.SERVICES))
                 build.assert_not_called()
+    def test_release_build_accepts_only_exact_qualified_descriptor_overlay(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self.candidate_fixture(root)
+            source_path = root / self.images.SOURCE_DESCRIPTOR_REL
+            source = json.loads(source_path.read_bytes())
+            source["source_revision"] = "a" * 40
+            source_path.write_bytes(self.images._canonical_json(source))
+
+            def run(command, **kwargs):
+                if "status" in command:
+                    return f" M {self.images.SOURCE_DESCRIPTOR_REL.as_posix()}\n"
+                if "rev-parse" in command:
+                    return "a" * 40 + "\n"
+                raise AssertionError(command)
+
+            with mock.patch.object(self.images, "_run", side_effect=run), mock.patch.object(
+                    self.images, "build_service_image", return_value={"qualified": True}) as build, \
+                    mock.patch.object(self.images.subprocess, "run", return_value=mock.Mock(returncode=0)):
+                result = self.images.build_images(
+                    root,
+                    platform="linux/amd64",
+                    prefix="release",
+                    services=("compilation-service",),
+                    qualified_descriptor_overlay=True,
+                )
+            self.assertEqual(result["source_revision"], "a" * 40)
+            build.assert_called_once()
+
+    def test_release_build_rejects_unrelated_dirty_file_with_descriptor_overlay(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self.candidate_fixture(root)
+            with mock.patch.object(
+                    self.images,
+                    "_run",
+                    return_value=" M driver.rs\n",
+                ), mock.patch.object(self.images, "build_service_image") as build:
+                with self.assertRaisesRegex(self.images.ImageError, "dirty checkout"):
+                    self.images.build_images(
+                        root,
+                        platform="linux/amd64",
+                        prefix="release",
+                        services=("compilation-service",),
+                        qualified_descriptor_overlay=True,
+                    )
+                build.assert_not_called()
 
     def test_candidate_verification_rejects_a_retagged_different_binary(self):
         with tempfile.TemporaryDirectory() as temporary:
