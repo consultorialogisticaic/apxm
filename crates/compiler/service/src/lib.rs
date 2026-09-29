@@ -1099,11 +1099,9 @@ fn declared_frontend_roots() -> FrontendRoots {
 fn declared_frontend_drivers() -> FrontendDrivers {
     let root = workspace_root();
     let python = std::env::var_os("APXM_PYTHON_DRIVER")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| root.join(".dekk/env/bin/python"));
+        .map_or_else(|| root.join(".dekk/env/bin/python"), PathBuf::from);
     let node = std::env::var_os("APXM_TYPESCRIPT_DRIVER")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| root.join(".dekk/env/bin/node"));
+        .map_or_else(|| root.join(".dekk/env/bin/node"), PathBuf::from);
     FrontendDrivers::new(python, node)
 }
 
