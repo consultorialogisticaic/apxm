@@ -78,6 +78,17 @@ versions come from `flake.lock`; update the lock only as an intentional
 toolchain change.
 
 ## Release outputs
+Before publishing or dispatching the release workflow, run the complete local owner preflight:
+
+```bash
+nix develop --command dekk agents preflight-release
+```
+
+This runs the service gate, both release service builds, native frontend build,
+local package qualification, and consumer-side package verification in the
+same order as the release workflow. It is a host-native preflight; the trusted
+worker still MUST repeat it for the exact linux/amd64 release cohort.
+
 
 APXM has two release products, with different consumers:
 

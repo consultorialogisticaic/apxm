@@ -50,7 +50,12 @@
           pkgs = pkgsFor system;
           llvm = pkgs.llvmPackages;
           rust = pkgs.rust-bin.fromRustupToolchainFile ./rust-toolchain.toml;
-          python = pkgs.python312;
+          python = pkgs.python312.withPackages (packages: [
+            packages.pip
+            packages.setuptools
+            packages.pytest
+            packages.pytest-asyncio
+          ]);
           dekk = dekkFor pkgs;
         in pkgs.mkShell {
           packages = [
@@ -58,8 +63,6 @@
             rust
             python
             pkgs.python312Packages.pip
-            pkgs.python312Packages.pytest
-            pkgs.python312Packages.pytest-asyncio
             pkgs.uv
             pkgs.nodejs_22
             pkgs.git
@@ -93,9 +96,18 @@
           };
 
           shellHook = ''
-            export PATH="$PWD/bin:$PWD/target/release:$PATH"
-            export CARGO_TARGET_DIR="${TMPDIR:-/tmp}/apxm-target-${USER:-unknown}"
+            export PATH="${python}/bin:$PWD/bin:$PWD/target/release:$PATH"
+            if test -d /srv/clic && test -w /srv/clic; then
+              export CARGO_TARGET_DIR="/srv/clic/apxm-target-${USER:-unknown}"
+            else
+              export CARGO_TARGET_DIR="${TMPDIR:-/tmp}/apxm-target-${USER:-unknown}"
+            fi
             export PYTHONPATH="$PWD/crates/compiler/frontend/python:$PWD/tools"
+            export APXM_PYTHON_DRIVER="$(command -v python)"
+            export APXM_TYPESCRIPT_DRIVER="$(command -v node)"
+            mkdir -p "$PWD/.dekk/env/bin"
+            ln -sfn "$APXM_PYTHON_DRIVER" "$PWD/.dekk/env/bin/python"
+            ln -sfn "$APXM_TYPESCRIPT_DRIVER" "$PWD/.dekk/env/bin/node"
             export APXM_TYPESCRIPT_FRONTEND_PACKAGE="$PWD/crates/compiler/frontend/typescript"
             export APXM_TYPESCRIPT_AGENT_PACKAGING_PACKAGE="$PWD/crates/tools/cli/agent-packaging"
             export APXM_PYTHON_AGENT_PACKAGING_PACKAGE="$PWD/crates/tools/cli/agent-packaging-python"
