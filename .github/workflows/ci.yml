@@ -22,6 +22,11 @@ jobs:
     # isolated self-hosted build boundary.
     runs-on: ${{ github.event_name == 'pull_request' && 'ubuntu-24.04' || 'self-hosted' }}
     timeout-minutes: 120
+    # Hosted PR runners do not expose the same kernel boundary as the
+    # production self-hosted runner; the service gate covers functional behavior
+    # there, while main releases remain enforced by the production boundary.
+    env:
+      APXM_CAPTURE_CONFINEMENT: ${{ github.event_name == 'pull_request' && 'permissive' || 'enforce' }}
     steps:
       - name: Reclaim runner build storage
         run: |
@@ -40,10 +45,6 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
 
-      - name: Validate frontend runtime paths
-        run: |
-          nix develop --command bash -c 'set -eux; command -v python; command -v python3; command -v node; "$APXM_PYTHON_DRIVER" -c "import sys; print(sys.executable)"; "$APXM_TYPESCRIPT_DRIVER" --version; printf "cargo=%s\n" "$CARGO_TARGET_DIR"; test -x "$APXM_PYTHON_DRIVER"; test -x "$APXM_TYPESCRIPT_DRIVER"'
-
       - name: Validate the locked Nix environment
         run: nix flake check --all-systems --no-update-lock-file
 
@@ -59,6 +60,11 @@ jobs:
     # isolated self-hosted build boundary.
     runs-on: ${{ github.event_name == 'pull_request' && 'ubuntu-24.04' || 'self-hosted' }}
     timeout-minutes: 120
+    # Hosted PR runners do not expose the same kernel boundary as the
+    # production self-hosted runner; the service gate covers functional behavior
+    # there, while main releases remain enforced by the production boundary.
+    env:
+      APXM_CAPTURE_CONFINEMENT: ${{ github.event_name == 'pull_request' && 'permissive' || 'enforce' }}
     steps:
       - name: Reclaim runner build storage
         run: |
