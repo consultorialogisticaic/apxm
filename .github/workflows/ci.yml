@@ -40,6 +40,10 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
 
+      - name: Validate frontend runtime paths
+        run: |
+          nix develop --command bash -c 'set -eux; command -v python; command -v python3; command -v node; "$APXM_PYTHON_DRIVER" -c "import sys; print(sys.executable)"; "$APXM_TYPESCRIPT_DRIVER" --version; printf "cargo=%s\n" "$CARGO_TARGET_DIR"; test -x "$APXM_PYTHON_DRIVER"; test -x "$APXM_TYPESCRIPT_DRIVER"'
+
       - name: Validate the locked Nix environment
         run: nix flake check --all-systems --no-update-lock-file
 
