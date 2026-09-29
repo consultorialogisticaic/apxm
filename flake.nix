@@ -125,10 +125,15 @@
             fi
             export PYTHONPATH="$PWD/crates/compiler/frontend/python:$PWD/tools"
             if test "$(uname -s)" = Linux && test -x /usr/bin/python3 && test -x /usr/bin/node; then
-              # Landlock can authorize the host runtime prefix without opening the
-              # entire Nix store and its unrelated executable closure.
-              export APXM_PYTHON_DRIVER="$(realpath /usr/bin/python3)"
-              export APXM_TYPESCRIPT_DRIVER="$(realpath /usr/bin/node)"
+              # Copy the host runtimes under the repository boundary. This lets
+              # Landlock grant the driver directory without opening /usr/bin.
+              runtime_root="$PWD/.dekk/runtime"
+              mkdir -p "$runtime_root"
+              cp "$(realpath /usr/bin/python3)" "$runtime_root/python3"
+              cp "$(realpath /usr/bin/node)" "$runtime_root/node"
+              chmod 755 "$runtime_root/python3" "$runtime_root/node"
+              export APXM_PYTHON_DRIVER="$runtime_root/python3"
+              export APXM_TYPESCRIPT_DRIVER="$runtime_root/node"
             else
               export APXM_PYTHON_DRIVER="$(realpath "$(command -v python)")"
               export APXM_TYPESCRIPT_DRIVER="$(realpath "$(command -v node)")"
