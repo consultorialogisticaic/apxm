@@ -124,16 +124,27 @@
               export CARGO_TARGET_DIR="''${TMPDIR:-/tmp}/apxm-target-''${USER:-unknown}"
             fi
             export PYTHONPATH="$PWD/crates/compiler/frontend/python:$PWD/tools"
-            if test "$(uname -s)" = Linux && test -x /usr/bin/python3 && test -x /usr/bin/node; then
-              # Copy the host runtimes under the repository boundary. This lets
-              # Landlock grant the driver directory without opening /usr/bin.
+            if test "$(uname -s)" = Linux; then
+              # Copy host runtimes under the repository boundary independently.
+              # Hosted Ubuntu images may provide Python and Node at different paths.
               runtime_root="$PWD/.dekk/runtime"
               mkdir -p "$runtime_root"
-              cp "$(realpath /usr/bin/python3)" "$runtime_root/python3"
-              cp "$(realpath /usr/bin/node)" "$runtime_root/node"
-              chmod 755 "$runtime_root/python3" "$runtime_root/node"
-              export APXM_PYTHON_DRIVER="$runtime_root/python3"
-              export APXM_TYPESCRIPT_DRIVER="$runtime_root/node"
+              if test -x /usr/bin/python3; then
+                cp "$(realpath /usr/bin/python3)" "$runtime_root/python3"
+                export APXM_PYTHON_DRIVER="$runtime_root/python3"
+              else
+                export APXM_PYTHON_DRIVER="$(realpath "$(command -v python)")"
+              fi
+              if test -x /usr/bin/node; then
+                cp "$(realpath /usr/bin/node)" "$runtime_root/node"
+                export APXM_TYPESCRIPT_DRIVER="$runtime_root/node"
+              elif test -x /usr/local/bin/node; then
+                cp "$(realpath /usr/local/bin/node)" "$runtime_root/node"
+                export APXM_TYPESCRIPT_DRIVER="$runtime_root/node"
+              else
+                export APXM_TYPESCRIPT_DRIVER="$(realpath "$(command -v node)")"
+              fi
+              chmod 755 "$runtime_root"/* 2>/dev/null || true
             else
               export APXM_PYTHON_DRIVER="$(realpath "$(command -v python)")"
               export APXM_TYPESCRIPT_DRIVER="$(realpath "$(command -v node)")"
