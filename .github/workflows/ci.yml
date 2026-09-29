@@ -18,7 +18,9 @@ jobs:
   service-gate:
     # A self-hosted runner must never execute code from an untrusted fork.
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: [self-hosted, linux, x64, clic-build]
+    # Pull requests use GitHub-hosted ephemeral runners; main releases remain on the
+    # isolated self-hosted build boundary.
+    runs-on: ${{ github.event_name == 'pull_request' && 'ubuntu-24.04' || 'self-hosted' }}
     timeout-minutes: 120
     steps:
       - name: Reclaim runner build storage
@@ -45,7 +47,9 @@ jobs:
     # Promotion to a runtime release remains an explicit owner operation.
     needs: service-gate
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: [self-hosted, linux, x64, clic-build]
+    # Pull requests use GitHub-hosted ephemeral runners; main releases remain on the
+    # isolated self-hosted build boundary.
+    runs-on: ${{ github.event_name == 'pull_request' && 'ubuntu-24.04' || 'self-hosted' }}
     timeout-minutes: 120
     steps:
       - name: Reclaim runner build storage
