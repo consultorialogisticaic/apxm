@@ -124,8 +124,8 @@
               export CARGO_TARGET_DIR="''${TMPDIR:-/tmp}/apxm-target-''${USER:-unknown}"
             fi
             export PYTHONPATH="$PWD/crates/compiler/frontend/python:$PWD/tools"
-            export APXM_PYTHON_DRIVER="$(command -v python)"
-            export APXM_TYPESCRIPT_DRIVER="$(command -v node)"
+            export APXM_PYTHON_DRIVER="$(realpath "$(command -v python)")"
+            export APXM_TYPESCRIPT_DRIVER="$(realpath "$(command -v node)")"
             mkdir -p "$PWD/.dekk/env/bin"
             ln -sfn "$APXM_PYTHON_DRIVER" "$PWD/.dekk/env/bin/python"
             ln -sfn "$APXM_TYPESCRIPT_DRIVER" "$PWD/.dekk/env/bin/node"
