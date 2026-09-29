@@ -18,19 +18,18 @@ jobs:
   service-gate:
     # A self-hosted runner must never execute code from an untrusted fork.
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-    # Pull requests use GitHub-hosted ephemeral runners; main releases remain on the
-    # isolated self-hosted build boundary, selected by its dedicated label.
-    runs-on: ${{ github.event_name == 'pull_request' && 'ubuntu-24.04' || 'clic-build' }}
+    # Pull requests and non-main manual runs use GitHub-hosted ephemeral runners;
+    # main releases remain on the isolated self-hosted build boundary.
+    runs-on: ${{ github.ref == 'refs/heads/main' && 'clic-build' || 'ubuntu-24.04' }}
     timeout-minutes: 120
-    # Hosted PR runners do not expose the same kernel boundary as the
-    # production self-hosted runner; the service gate covers functional behavior
-    # there, while main releases remain enforced by the production boundary.
+    # Hosted runs do not expose the production kernel boundary. Main releases are
+    # enforced on the dedicated self-hosted build boundary.
     env:
-      APXM_CAPTURE_CONFINEMENT: ${{ github.event_name == 'pull_request' && 'permissive' || 'enforce' }}
+      APXM_CAPTURE_CONFINEMENT: ${{ github.ref == 'refs/heads/main' && 'enforce' || 'permissive' }}
     steps:
 
-      - name: Install Nix on hosted PR runners
-        if: github.event_name == 'pull_request'
+      - name: Install Nix on hosted runners
+        if: github.ref != 'refs/heads/main'
         uses: DeterminateSystems/nix-installer-action@786fff0690178f1234e4e1fe9b536e94f5433196 # v20
 
       - name: Checkout exact event revision
@@ -51,19 +50,18 @@ jobs:
     # Promotion to a runtime release remains an explicit owner operation.
     needs: service-gate
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-    # Pull requests use GitHub-hosted ephemeral runners; main releases remain on the
-    # isolated self-hosted build boundary, selected by its dedicated label.
-    runs-on: ${{ github.event_name == 'pull_request' && 'ubuntu-24.04' || 'clic-build' }}
+    # Pull requests and non-main manual runs use GitHub-hosted ephemeral runners;
+    # main releases remain on the isolated self-hosted build boundary.
+    runs-on: ${{ github.ref == 'refs/heads/main' && 'clic-build' || 'ubuntu-24.04' }}
     timeout-minutes: 120
-    # Hosted PR runners do not expose the same kernel boundary as the
-    # production self-hosted runner; the service gate covers functional behavior
-    # there, while main releases remain enforced by the production boundary.
+    # Hosted runs do not expose the production kernel boundary. Main releases are
+    # enforced on the dedicated self-hosted build boundary.
     env:
-      APXM_CAPTURE_CONFINEMENT: ${{ github.event_name == 'pull_request' && 'permissive' || 'enforce' }}
+      APXM_CAPTURE_CONFINEMENT: ${{ github.ref == 'refs/heads/main' && 'enforce' || 'permissive' }}
     steps:
 
-      - name: Install Nix on hosted PR runners
-        if: github.event_name == 'pull_request'
+      - name: Install Nix on hosted runners
+        if: github.ref != 'refs/heads/main'
         uses: DeterminateSystems/nix-installer-action@786fff0690178f1234e4e1fe9b536e94f5433196 # v20
 
       - name: Checkout exact event revision
