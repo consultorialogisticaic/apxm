@@ -156,6 +156,12 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
 
+      - name: Select the qualified release descriptors
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: apxm-release-descriptors-${{ github.sha }}
+          path: .
+
       - name: Build the Linux AMD64 service image pair
         run: >-
           nix develop --command dekk agents build-images
@@ -164,11 +170,13 @@ jobs:
 
       - name: Verify the built image pair from the consumer boundary
         run: |
-          set -o pipefail
           # shellcheck disable=SC2016
-          nix develop --command dekk agents verify-images \
-            --repository-prefix ghcr.io/consultorialogisticaic/apxm \
-            | tee image-evidence-verification.json
+          nix develop --command bash -euo pipefail -c '
+            dekk agents verify-images \
+              --repository-prefix ghcr.io/consultorialogisticaic/apxm \
+              > image-evidence-verification.json
+            python -m json.tool image-evidence-verification.json >/dev/null
+          '
 
       - name: Publish the immutable image pair
         env:
