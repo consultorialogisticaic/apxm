@@ -821,7 +821,11 @@ mod platform {
         if applied == 0 {
             Ok(())
         } else {
-            Err(io::Error::last_os_error())
+            let error = io::Error::last_os_error();
+            Err(io::Error::new(
+                error.kind(),
+                format!("seccomp filter installation failed: {error}"),
+            ))
         }
     }
 
@@ -850,7 +854,11 @@ mod platform {
         if unsafe { libc::setrlimit(resource, &raw const limit) } == 0 {
             Ok(())
         } else {
-            Err(io::Error::last_os_error())
+            let error = io::Error::last_os_error();
+            Err(io::Error::new(
+                error.kind(),
+                format!("setrlimit({resource}): {error}"),
+            ))
         }
     }
 
@@ -859,17 +867,21 @@ mod platform {
             libc::RLIMIT_CPU,
             ceilings.cpu_seconds,
             ceilings.cpu_seconds + 5,
-        )?;
-        set_ceiling(libc::RLIMIT_DATA, ceilings.data_bytes, ceilings.data_bytes)?;
+        )
+        .map_err(|error| io::Error::new(error.kind(), format!("CPU ceiling: {error}")))?;
+        set_ceiling(libc::RLIMIT_DATA, ceilings.data_bytes, ceilings.data_bytes)
+            .map_err(|error| io::Error::new(error.kind(), format!("data ceiling: {error}")))?;
         set_ceiling(
             libc::RLIMIT_FSIZE,
             ceilings.file_size_bytes,
             ceilings.file_size_bytes,
-        )?;
-        set_ceiling(libc::RLIMIT_NPROC, ceilings.tasks, ceilings.tasks)?;
+        )
+        .map_err(|error| io::Error::new(error.kind(), format!("file-size ceiling: {error}")))?;
+        set_ceiling(libc::RLIMIT_NPROC, ceilings.tasks, ceilings.tasks)
+            .map_err(|error| io::Error::new(error.kind(), format!("task ceiling: {error}")))?;
         set_ceiling(libc::RLIMIT_CORE, 0, 0)
+            .map_err(|error| io::Error::new(error.kind(), format!("core ceiling: {error}")))
     }
-
     pub(super) fn readiness(mode: ConfinementMode) -> ConfinementReadiness {
         let abi = landlock_abi();
         let seccomp = seccomp_supported();
