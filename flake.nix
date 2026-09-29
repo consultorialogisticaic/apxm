@@ -124,8 +124,15 @@
               export CARGO_TARGET_DIR="''${TMPDIR:-/tmp}/apxm-target-''${USER:-unknown}"
             fi
             export PYTHONPATH="$PWD/crates/compiler/frontend/python:$PWD/tools"
-            export APXM_PYTHON_DRIVER="$(realpath "$(command -v python)")"
-            export APXM_TYPESCRIPT_DRIVER="$(realpath "$(command -v node)")"
+            if test "$(uname -s)" = Linux && test -x /usr/bin/python3 && test -x /usr/bin/node; then
+              # Landlock can authorize the host runtime prefix without opening the
+              # entire Nix store and its unrelated executable closure.
+              export APXM_PYTHON_DRIVER="/usr/bin/python3"
+              export APXM_TYPESCRIPT_DRIVER="/usr/bin/node"
+            else
+              export APXM_PYTHON_DRIVER="$(realpath "$(command -v python)")"
+              export APXM_TYPESCRIPT_DRIVER="$(realpath "$(command -v node)")"
+            fi
             mkdir -p "$PWD/.dekk/env/bin"
             ln -sfn "$APXM_PYTHON_DRIVER" "$PWD/.dekk/env/bin/python"
             ln -sfn "$APXM_TYPESCRIPT_DRIVER" "$PWD/.dekk/env/bin/node"
