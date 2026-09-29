@@ -108,6 +108,14 @@
             mkdir -p "$cargo_root"
             printf '#!/bin/sh\nexit 0\n' > "$cargo_probe"
             chmod 700 "$cargo_probe"
+            if ! "$cargo_probe"; then
+              rm -f "$cargo_probe"
+              cargo_root="''${HOME}/.cache"
+              mkdir -p "$cargo_root"
+              cargo_probe="''${cargo_root}/.apxm-exec-probe-''${USER:-unknown}"
+              printf '#!/bin/sh\nexit 0\n' > "$cargo_probe"
+              chmod 700 "$cargo_probe"
+            fi
             if "$cargo_probe"; then
               rm -f "$cargo_probe"
               export CARGO_TARGET_DIR="''${cargo_root}/apxm-target-''${USER:-unknown}"
