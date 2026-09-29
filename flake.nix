@@ -97,10 +97,23 @@
 
           shellHook = ''
             export PATH="${python}/bin:$PWD/bin:$PWD/target/release:$PATH"
+            # The runner data disk may be mounted noexec. Cargo must compile and
+            # execute test binaries, so select persistent storage only when it
+            # accepts execution; otherwise use the executable home filesystem.
+            cargo_root="''${HOME}/.cache"
             if test -d /srv/clic && test -w /srv/clic; then
-              export CARGO_TARGET_DIR="/srv/clic/apxm-target-${USER:-unknown}"
+              cargo_root="/srv/clic"
+            fi
+            cargo_probe="''${cargo_root}/.apxm-exec-probe-''${USER:-unknown}"
+            mkdir -p "$cargo_root"
+            printf '#!/bin/sh\nexit 0\n' > "$cargo_probe"
+            chmod 700 "$cargo_probe"
+            if "$cargo_probe"; then
+              rm -f "$cargo_probe"
+              export CARGO_TARGET_DIR="''${cargo_root}/apxm-target-''${USER:-unknown}"
             else
-              export CARGO_TARGET_DIR="${TMPDIR:-/tmp}/apxm-target-${USER:-unknown}"
+              rm -f "$cargo_probe"
+              export CARGO_TARGET_DIR="''${TMPDIR:-/tmp}/apxm-target-''${USER:-unknown}"
             fi
             export PYTHONPATH="$PWD/crates/compiler/frontend/python:$PWD/tools"
             export APXM_PYTHON_DRIVER="$(command -v python)"
