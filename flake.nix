@@ -127,8 +127,8 @@
             if test "$(uname -s)" = Linux && test -x /usr/bin/python3 && test -x /usr/bin/node; then
               # Landlock can authorize the host runtime prefix without opening the
               # entire Nix store and its unrelated executable closure.
-              export APXM_PYTHON_DRIVER="/usr/bin/python3"
-              export APXM_TYPESCRIPT_DRIVER="/usr/bin/node"
+              export APXM_PYTHON_DRIVER="$(realpath /usr/bin/python3)"
+              export APXM_TYPESCRIPT_DRIVER="$(realpath /usr/bin/node)"
             else
               export APXM_PYTHON_DRIVER="$(realpath "$(command -v python)")"
               export APXM_TYPESCRIPT_DRIVER="$(realpath "$(command -v node)")"
