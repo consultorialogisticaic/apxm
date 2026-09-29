@@ -33,3 +33,39 @@ jobs:
 
       - name: Run the APXM service-owner gate
         run: nix develop --command dekk agents check-service
+
+  release-artifact:
+    # The package is a run-scoped immutable artifact, not a mutable release.
+    # Promotion to a runtime release remains an explicit owner operation.
+    needs: service-gate
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, linux, x64, clic-build]
+    timeout-minutes: 120
+    steps:
+      - name: Checkout exact event revision
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Build the AMD64 APXM service binaries
+        run: nix develop --command dekk agents build-service-artifacts
+
+      - name: Build the native frontend carriers
+        run: nix develop --command dekk agents test-compilation-service
+
+      - name: Package and qualify the immutable APXM cohort
+        run: nix develop --command dekk agents package-release
+
+      - name: Verify the packaged APXM cohort as a consumer
+        run: nix develop --command dekk agents verify-package
+
+      - name: Upload the immutable APXM cohort
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: apxm-release-${{ github.event.pull_request.head.sha || github.sha }}
+          path: .apxm/release-artifacts
+          if-no-files-found: error
+          include-hidden-files: true
+          retention-days: 30
