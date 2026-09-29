@@ -816,13 +816,8 @@ mod platform {
         if applied == 0 {
             return Ok(());
         }
-        let applied = unsafe {
-            libc::prctl(
-                libc::PR_SET_SECCOMP,
-                SECCOMP_MODE_FILTER,
-                &raw const fprog,
-            )
-        };
+        let applied =
+            unsafe { libc::prctl(libc::PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &raw const fprog) };
         if applied == 0 {
             Ok(())
         } else {
@@ -978,7 +973,8 @@ mod platform {
                     return Err(io::Error::last_os_error());
                 }
                 if let Some(ruleset) = ruleset.as_ref() {
-                    let entered = libc::syscall(SYS_LANDLOCK_RESTRICT_SELF, ruleset.as_raw_fd(), 0_u32);
+                    let entered =
+                        libc::syscall(SYS_LANDLOCK_RESTRICT_SELF, ruleset.as_raw_fd(), 0_u32);
                     if entered != 0 {
                         return Err(io::Error::last_os_error());
                     }
