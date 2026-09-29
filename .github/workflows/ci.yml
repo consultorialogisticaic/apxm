@@ -146,6 +146,7 @@ jobs:
     runs-on: [self-hosted, linux, x64, clic-build]
     timeout-minutes: 240
     permissions:
+      contents: read
       packages: write
     steps:
       - name: Checkout exact event revision
@@ -172,18 +173,17 @@ jobs:
       - name: Publish the immutable image pair
         env:
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          REVISION: ${{ github.sha }}
         run: |
           # shellcheck disable=SC2016
           nix develop --command bash -euo pipefail -c '
-            suffix="${REVISION:0:8}"
+            revision="$(jq -r .source_revision deploy/services/source-revision.v1.json)"
+            suffix="${revision:0:8}"
             printf "%s" "$GHCR_TOKEN" | docker login ghcr.io \
               -u "${{ github.actor }}" --password-stdin
             for service in compilation-service runtime-service; do
               repository="ghcr.io/consultorialogisticaic/apxm/$service"
-              docker tag "apxm/$service:$suffix" "$repository:$suffix"
               docker push "$repository:$suffix"
-              docker buildx imagetools inspect "$repository:$suffix" \
+              docker buildx imagetools inspect --raw "$repository:$suffix" \
                 > "image-evidence-$service.json"
             done
             docker logout
