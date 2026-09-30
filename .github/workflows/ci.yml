@@ -84,11 +84,8 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
 
-      - name: Build the AMD64 APXM service binaries
-        run: nix develop --command dekk agents build-service-artifacts
-
-      - name: Build the native frontend carriers
-        run: nix develop --command dekk agents test-compilation-service
+      - name: Prepare the exact AMD64 release cohort
+        run: nix develop --command dekk agents prepare-release-descriptors
 
       - name: Package and qualify the immutable APXM cohort
         run: nix develop --command dekk agents package-release
