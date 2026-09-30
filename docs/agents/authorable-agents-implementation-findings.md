@@ -1,5 +1,31 @@
 # Authorable Agents implementation findings
 
+## Runtime composition correction — 2026-09-30
+
+Runtime Service composition no longer seeds model request SSA identities with
+synthetic `{value_id}` objects. Invocation input enters exclusively through
+`EntrypointInput`; authored expressions and upstream operations produce every
+other request value. The execution driver’s duplicate-input and future-result
+guards remain unchanged.
+
+The regression compiles typed Python and TypeScript Agents that pass their
+input directly to a Model, then invokes the sealed artifact through Runtime
+Service. It checks both resumable and single-shot starts, matching output for
+an equivalent authored request assembly, and distinct output for distinct
+prompts. The explicitly selected development inference backend is isolated in
+a child process; no request SSA values are injected by the test.
+
+`nix develop --command dekk agents test-runtime-service` reproduced the exact
+duplicate-entrypoint rejection before the correction and passed afterward:
+140 unit tests, 5 Unix integration tests, and 25 host/model integration tests.
+`nix develop --command dekk agents build-service-artifacts` built the native
+service pair. A disposable compiler-port-to-runtime-binary JSONL smoke
+committed a typed Model result and checked durable `committed_return` state.
+The complete `check-service` gate passed all 17 steps after formatting,
+including Clippy and both frontend suites. This is local fixture inference
+evidence, not hosted-provider qualification or a Linux release build.
+No release selection changed.
+
 Audit date: 2026-08-15
 
 Scope: the `apxm/authorable-agents` tree, including the S0–S12 plan, checked-in
