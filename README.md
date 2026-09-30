@@ -109,6 +109,12 @@ opens a CLIC pin PR containing those digests. CLIC then consumes only the
 reviewed `name@sha256:<digest>` references; it never compiles APXM from a
 checkout during deployment.
 
+An explicitly authorized manual branch image build uses the same owner gate,
+descriptor preparation, AMD64 build and consumer verification on GitHub-hosted
+ephemeral runners. Main image publication stays on the isolated `clic-build`
+worker. This manual path does not merge source, select a consumer release,
+or establish hosted workload acceptance.
+
 The Nix shell makes the toolchain reproducible. It is not itself a binary
 cache and does not replace the owner release manifest or OCI publication.
 ## Local service-image candidates
