@@ -36,6 +36,12 @@ OWNER_DESCRIPTOR_SIDECAR_REL = Path(
 RELEASE_MANIFEST_REL = Path(
     "contracts/services/manifests/apxm.agents-service-release-manifest.v1.json"
 )
+RELEASE_DESCRIPTOR_RELS = (
+    SOURCE_DESCRIPTOR_REL,
+    OWNER_DESCRIPTOR_REL,
+    OWNER_DESCRIPTOR_SIDECAR_REL,
+    RELEASE_MANIFEST_REL,
+)
 PYTHON_FRONTEND_PACKAGE_REL = Path(
     "crates/compiler/frontend/python/apxm_program/_native.so"
 )
@@ -311,6 +317,23 @@ def _git_is_ancestor(root: Path, ancestor: str, descendant: str) -> bool:
 
 def _is_clean(root: Path) -> bool:
     return _git_text(root, "status", "--porcelain", "--untracked-files=all") == ""
+
+
+def _is_qualified_descriptor_overlay(root: Path) -> bool:
+    """Accept only descriptors generated from exact HEAD artifacts in this run."""
+
+    raw_status = _git_bytes(root, "status", "--porcelain", "--untracked-files=all")
+    status_lines = {
+        line for line in (raw_status or b"").decode("utf-8").splitlines() if line
+    }
+    allowed = {f" M {relative.as_posix()}" for relative in RELEASE_DESCRIPTOR_RELS}
+    if not status_lines or not status_lines <= allowed:
+        return False
+    try:
+        source = json.loads((root / SOURCE_DESCRIPTOR_REL).read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return False
+    return source.get("source_revision") == _git_revision(root)
 
 
 def _resolve_regular_file(root: Path, candidate: Path) -> Path | None:
@@ -1226,6 +1249,7 @@ def qualify(
     run_gates: bool = True,
     gates: Sequence[str] = OWNER_GATES,
     emit_gate_output: bool = True,
+    qualified_descriptor_overlay: bool = False,
 ) -> Qualification:
     result = Qualification()
     root = root.resolve()
@@ -1285,7 +1309,9 @@ def qualify(
             if frontend_package_snapshot is not None:
                 frontend_package_snapshot.restore()
 
-    if not _is_clean(root):
+    if not _is_clean(root) and not (
+        qualified_descriptor_overlay and _is_qualified_descriptor_overlay(root)
+    ):
         result.diagnostics.append(
             Diagnostic(
                 "dirty-checkout",
@@ -1720,6 +1746,7 @@ def package_release(
     run_gates: bool = True,
     gates: Sequence[str] = OWNER_GATES,
     emit_gate_output: bool = True,
+    qualified_descriptor_overlay: bool = False,
 ) -> dict[str, Any]:
     """Materialize and qualify one write-once local service release package."""
 
@@ -1731,6 +1758,7 @@ def package_release(
         run_gates=run_gates,
         gates=gates,
         emit_gate_output=emit_gate_output,
+        qualified_descriptor_overlay=qualified_descriptor_overlay,
     )
     payload = _package_payload(result, root)
     payload["schema"] = LOCAL_ARTIFACT_SCHEMA
@@ -2408,6 +2436,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     package_parser.add_argument("--compilation-service")
     package_parser.add_argument("--runtime-service")
     package_parser.add_argument("--skip-gates", action="store_true")
+    package_parser.add_argument("--qualified-descriptor-overlay", action="store_true")
     package_parser.add_argument("--json", action="store_true", dest="as_json")
     verify_parser = subparsers.add_parser(
         "verify-package", help="verify one immutable local service release package as a consumer"
@@ -2456,6 +2485,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 runtime_service_path=args.runtime_service,
                 run_gates=not args.skip_gates,
                 emit_gate_output=not args.as_json,
+                qualified_descriptor_overlay=args.qualified_descriptor_overlay,
             )
         except (OSError, ValueError) as exc:
             payload = {

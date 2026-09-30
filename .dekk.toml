@@ -4,28 +4,6 @@
 name = "agents"
 description = "MLIR compiler and runtime for agent graphs"
 
-[environment]
-type = "conda"
-path = "{project}/.dekk/env"
-name = "apxm"
-channels = ["conda-forge"]
-
-[environment.packages]
-mlir = "22"
-libclang13 = "22"
-clang = "22"
-gxx_linux-64 = ""
-python = "3.11"
-pytest = ""
-pytest-asyncio = ""
-cmake = ""
-ninja = ""
-uv = ""
-nodejs = "22"
-# The repository's own tooling shells out to `git -C`, which needs git >= 1.8.5.
-# Several development hosts carry 1.8.3.1, where that is a usage error, so the
-# environment pins a modern git rather than depending on whatever the host ships.
-git = ""
 
 [tools]
 cmake = { command = "cmake", version = ">=3.20" }
@@ -43,16 +21,6 @@ NPM_CONFIG_CACHE = "{project}/.dekk/npm-cache"
 PIP_CACHE_DIR = "{project}/.dekk/pip-cache"
 UV_CACHE_DIR = "{project}/.dekk/uv-cache"
 
-MLIR_DIR = "{environment}/lib/cmake/mlir"
-LLVM_DIR = "{environment}/lib/cmake/llvm"
-MLIR_PREFIX = "{environment}"
-LLVM_PREFIX = "{environment}"
-CC = "{environment}/bin/x86_64-conda-linux-gnu-gcc"
-CXX = "{environment}/bin/x86_64-conda-linux-gnu-g++"
-CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER = "{environment}/bin/clang"
-RUSTUP_HOME = "{home}/.rustup"
-CARGO_HOME = "{home}/.cargo"
-RUSTUP_TOOLCHAIN = "1.91.1"
 # Intentionally NOT setting APXM_HOME: it's the user data root
 # (default ~/.apxm), and pinning it to {project} broke roaming-bucket
 # resolution. Override per-shell or via .apxm/config.toml instead.
@@ -60,7 +28,6 @@ PYTHONPATH = "{project}/crates/compiler/frontend/python:{project}/tools"
 APXM_TYPESCRIPT_FRONTEND_PACKAGE = "{project}/crates/compiler/frontend/typescript"
 APXM_TYPESCRIPT_AGENT_PACKAGING_PACKAGE = "{project}/crates/tools/cli/agent-packaging"
 APXM_PYTHON_AGENT_PACKAGING_PACKAGE = "{project}/crates/tools/cli/agent-packaging-python"
-LD_LIBRARY_PATH = "{project}/target/release/lib:{project}/target/release:{environment}/lib"
 
 [paths]
 bin = [
@@ -69,29 +36,22 @@ bin = [
 	"{home}/.local/bin",
 	"{home}/.cargo/bin",
 ]
-lib = ["{project}/target/release/lib", "{environment}/lib"]
+lib = ["{project}/target/release/lib"]
 
 [commands]
-compile-source-bundle = { run = "env -u CC -u CXX python tools/scripts/cargo.py run -p apxm-source-port --example compile_source_bundle -- crates/compiler/frontend/python crates/compiler/frontend/typescript .dekk/env/bin/python .dekk/env/bin/node", description = "Compile one stdin SourceBundleRequest through installed frontends and print its committed executable artifact", group = "Compilation" }
+compile-source-bundle = { run = "env -u CC -u CXX python tools/scripts/cargo.py run -p apxm-source-port --example compile_source_bundle -- crates/compiler/frontend/python crates/compiler/frontend/typescript python node", description = "Compile one stdin SourceBundleRequest through installed frontends and print its committed executable artifact", group = "Compilation" }
 build = { run = "python tools/scripts/cargo.py build -p apxm-cli --features driver,metrics --release", description = "Build the APXM CLI", skill = true, group = "Build & Test" }
 build-dialect = { run = "python tools/scripts/cargo.py build-dialect", description = "Rebuild MLIR dialect (TableGen + C++ + Rust) after editing .td or .cpp files", skill = true, group = "Build & Test" }
 # The workspace includes source-capture tests that launch the isolated Python
 # frontend. Keep each Rust test binary's cases serial so the owner gate does
 # not overload the host with concurrent frontend interpreters and turn valid
 # submitted source into nondeterministic capture diagnostics.
-test = { run = "python tools/scripts/check_frontend_parity.py && python tools/scripts/cargo.py test --workspace --exclude apxm-compiler --exclude apxm-cli -- --test-threads=1 && python -m pytest crates/compiler/frontend/python/tests_program -q", description = "Run frontend parity, workspace, and canonical authoring tests", skill = true, group = "Build & Test" }
-# This deliberately does NOT carry the `env -u CC -u CXX` of the frontend
-# commands below. Those unset the pair so a PyO3/napi module is not linked by the
-# conda cross-compiler wrapper; this command instead builds the MLIR dialect,
-# where the pair is what CMake needs. Unsetting it cannot fall back to the Dekk
-# toolchain, because [environment.packages] installs no unsuffixed `cc`, `c++`,
-# `gcc`, `g++`, or `clang++` — only `clang`, `clang++-22`, and the
-# `x86_64-conda-linux-gnu-*` pair. So the unset always dropped CMake onto the
-# host compiler, which on an RHEL7 development host is GCC 4.8.5 and fails
-# LLVM's `CheckCompilerVersion` (>= 7.4). Keeping the pair set also keeps macOS
-# working: cargo.py's Darwin fixup rewrites a linux-gnu CC/CXX to native clang
-# only when they ARE set, so the unset defeated the very fixup it looked like it
-# was there for.
+test = { run = "python tools/scripts/check_frontend_parity.py && python tools/scripts/cargo.py test --workspace --exclude apxm-compiler --exclude apxm-cli -- --test-threads=1 && pytest crates/compiler/frontend/python/tests_program -q", description = "Run frontend parity, workspace, and canonical authoring tests", skill = true, group = "Build & Test" }
+# The Nix shell exports native Clang and the pinned LLVM/MLIR package.
+# Frontend commands below unset CC/CXX because their PyO3/napi modules use
+# the host-language linker path; compiler and dialect commands retain the
+# shell compiler so CMake sees the same toolchain on every supported host.
+
 test-compiler = { run = "python tools/scripts/cargo.py test -p apxm-compiler --features mlir", description = "Run compiler AIR builder and pipeline tests", group = "Build & Test" }
 test-source-port = { run = "env -u CC -u CXX python tools/scripts/cargo.py test -p apxm-source-port", description = "Run source-bundle compiler port conformance", group = "Build & Test" }
 test-compilation-protocol = { run = "env -u CC -u CXX python tools/scripts/cargo.py test -p apxm-compilation-protocol", description = "Run Compilation Service protocol vectors", group = "Build & Test" }
@@ -119,7 +79,8 @@ test-capability-iface = { run = "python tools/scripts/cargo.py test -p apxm-capa
 # qualification so failures identify the handoff/recovery boundary directly.
 test-compilation-runtime-failure-restart = { run = "env -u CC -u CXX python tools/scripts/cargo.py test -p apxm-compilation-service failed_compile_has_no_store_entry && python tools/scripts/cargo.py test -p apxm-runtime-service unknown_digest_does_not_create_an_instance && python tools/scripts/cargo.py test -p apxm-runtime-service disconnect_does_not_fabricate_stop && python tools/scripts/cargo.py test -p apxm-kernel --test lifecycle committed_continuation_recovers_but_failure_paths_publish_nothing -- --exact && python tools/scripts/cargo.py test -p apxm-execution --test resume_and_ports resume_reads_the_committed_structural_continuation -- --exact", description = "Run neutral Compilation failure, Runtime fail-closed, and restart/recovery evidence", group = "Build & Test" }
 release-qualification = { run = "python tools/scripts/release_qualification.py qualify --json", description = "Run owner check/test and exact Compilation/Runtime protocol gates, then validate immutable release descriptors and every published artifact and schema digest", group = "Build & Test" }
-package-release = { run = "python tools/scripts/release_qualification.py package --json", description = "Package and qualify one immutable local Compilation/Runtime release artifact with machine-readable owner evidence", group = "Build & Test" }
+preflight-release = { run = "dekk agents check-service && dekk agents prepare-release-descriptors && dekk agents package-release && dekk agents verify-package", description = "Run the same owner gate, exact release cohort preparation, package qualification, and consumer verification locally before publishing or dispatching CI", group = "Build & Test" }
+package-release = { run = "python tools/scripts/release_qualification.py package --qualified-descriptor-overlay", description = "Package and qualify one immutable local Compilation/Runtime release artifact with owner evidence", group = "Build & Test" }
 verify-package = { run = "python tools/scripts/release_qualification.py verify-package --json", description = "Verify an immutable APXM service release package from the consumer boundary with machine-readable evidence", group = "Build & Test" }
 test-release-qualification = { run = "python -m unittest tools.tests.test_release_qualification", description = "Run the owner-local immutable release qualification unit tests", group = "Build & Test" }
 qualify-release = { run = "python tools/scripts/release_qualification.py qualify", description = "Alias for the APXM owner release qualification gate", group = "Build & Test" }
@@ -127,6 +88,7 @@ owner-qualification = { run = "python tools/scripts/owner_qualification.py owner
 owner-failure-restart = { run = "python tools/scripts/owner_qualification.py owner-failure-restart", description = "Run neutral Compilation/Runtime failure and durable restart/recovery evidence with an immutable handoff", group = "Owner Qualification" }
 test-owner-qualification = { run = "python -m unittest tools.tests.test_owner_qualification", description = "Validate neutral owner qualification, immutable handoff, and failure evidence", group = "Build & Test" }
 build-service-artifacts = { run = "env -u CC -u CXX -u DYLD_LIBRARY_PATH -u DYLD_FALLBACK_LIBRARY_PATH python tools/scripts/cargo.py build -p apxm-compilation-service -p apxm-runtime-service --release", description = "Build the exact APXM Compilation and Runtime service binaries used by the owner release boundary", group = "Build & Test" }
+prepare-release-descriptors = { run = "dekk agents build-service-artifacts && dekk agents test-compilation-service && APXM_COMPILATION_SERVICE_BINARY=\"$PWD/target/release/apxm-compilation-service\" APXM_RUNTIME_SERVICE_BINARY=\"$PWD/target/release/apxm-runtime-service\" dekk agents release-descriptors", description = "Build the Linux service and frontend artifacts, stage them inside the checkout, then refresh the four checked-in release descriptors from their exact bytes", group = "Build & Test" }
 release-descriptors = { run = "python tools/scripts/release_qualification.py generate --compilation-service \"${APXM_COMPILATION_SERVICE_BINARY:?set APXM_COMPILATION_SERVICE_BINARY to the published Compilation Service executable}\" --runtime-service \"${APXM_RUNTIME_SERVICE_BINARY:?set APXM_RUNTIME_SERVICE_BINARY to the published Runtime Service executable}\" --output-dir .", description = "Generate product-neutral source, owner, sidecar, and service release descriptors from real APXM service binaries", group = "Build & Test" }
 owner-e2e = { run = "python tools/scripts/owner_phase.py owner-e2e", description = "Owner end-to-end gate with one final structured owner result", group = "Owner Qualification" }
 owner-compilation-runtime = { run = "python tools/scripts/owner_phase.py owner-compilation-runtime", description = "Owner Compilation/Runtime proof with one final structured owner result", group = "Owner Qualification" }
@@ -161,11 +123,11 @@ test-service-gate = { run = "python -m unittest tools.tests.test_service_gate", 
 test-cli = { run = "npm --prefix crates/tools/cli/agent-packaging ci --ignore-scripts --no-audit --no-fund && python tools/scripts/cargo.py test -p apxm-cli --features driver,metrics --release && python tools/scripts/cargo.py test -p apxm-cli-dev --release", description = "Run CLI tests with agent-packaging dependencies", group = "Build & Test" }
 test-frontend-generators = { run = "env -u CC -u CXX python tools/scripts/cargo.py test -p apxm-cli-dev frontend::", description = "Verify schema-driven frontend records, discriminated unions, serializers, vocabulary, and authoring documentation generation", group = "Build & Test" }
 test-cli-installed-frontend = { run = "env -u CC -u CXX python tools/scripts/cargo.py build -p apxm-frontend-python --release && python tools/scripts/install_frontend_native.py python && python tools/scripts/cargo.py test -p apxm-cli --features driver,metrics --release -- --ignored && python tools/scripts/cargo.py test -p apxm-cli-dev --release -- --ignored", description = "Run the CLI tests that spawn a package entry against the installed Python authoring frontend", group = "Build & Test" }
-test-python-frontend = { run = "if [ \"${APXM_SKIP_NATIVE_BUILD:-0}\" = \"1\" ]; then python -m pytest crates/compiler/frontend/python/tests_program/test_frontend_conformance.py crates/compiler/frontend/python/tests_program/test_language_local_frontend.py crates/compiler/frontend/python/tests_program/test_capability_handlers.py crates/compiler/frontend/python/tests_program/test_packed_package.py -q; else env -u CC -u CXX python tools/scripts/cargo.py build -p apxm-frontend-python --release && python tools/scripts/install_frontend_native.py python && APXM_SKIP_NATIVE_BUILD=1 python -m pytest crates/compiler/frontend/python/tests_program/test_frontend_conformance.py crates/compiler/frontend/python/tests_program/test_language_local_frontend.py crates/compiler/frontend/python/tests_program/test_capability_handlers.py crates/compiler/frontend/python/tests_program/test_packed_package.py -q; fi", description = "Run the shared frontend-conformance corpus, the generic Python frontend, and packed-wheel tests", group = "Build & Test" }
+test-python-frontend = { run = "if [ \"${APXM_SKIP_NATIVE_BUILD:-0}\" = \"1\" ]; then pytest crates/compiler/frontend/python/tests_program/test_frontend_conformance.py crates/compiler/frontend/python/tests_program/test_language_local_frontend.py crates/compiler/frontend/python/tests_program/test_capability_handlers.py crates/compiler/frontend/python/tests_program/test_packed_package.py -q; else env -u CC -u CXX python tools/scripts/cargo.py build -p apxm-frontend-python --release && python tools/scripts/install_frontend_native.py python && APXM_SKIP_NATIVE_BUILD=1 pytest crates/compiler/frontend/python/tests_program/test_frontend_conformance.py crates/compiler/frontend/python/tests_program/test_language_local_frontend.py crates/compiler/frontend/python/tests_program/test_capability_handlers.py crates/compiler/frontend/python/tests_program/test_packed_package.py -q; fi", description = "Run the shared frontend-conformance corpus, the generic Python frontend, and packed-wheel tests", group = "Build & Test" }
 test-typescript-frontend = { run = "npm --prefix crates/compiler/frontend/typescript ci --ignore-scripts --no-audit --no-fund && npm --prefix crates/compiler/frontend/typescript run typecheck && npm --prefix crates/compiler/frontend/typescript run typecheck:test && env -u CC -u CXX python tools/scripts/cargo.py build -p apxm-frontend-typescript --release && npm --prefix crates/compiler/frontend/typescript run build && python tools/scripts/install_frontend_native.py typescript && npm --prefix crates/compiler/frontend/typescript test", description = "Install the locked frontend dependencies, then run the shared frontend-conformance corpus, generic TypeScript frontend, and packed-package tests", group = "Build & Test" }
 test-external-source-package = { run = "env -u CC -u CXX python tools/scripts/cargo.py build -p apxm-frontend-typescript --release && npm --prefix crates/compiler/frontend/typescript run build && python tools/scripts/install_frontend_native.py typescript && python tools/scripts/check_external_typescript_package.py tools/tests/fixtures/external-typescript-package", description = "Compile an external TypeScript Agent Program package through the public frontend", group = "Build & Test" }
 test-handler-packaging = { run = "npm --prefix crates/tools/cli/agent-packaging test", description = "Run private TypeScript handler-packaging API conformance", group = "Build & Test" }
-test-frontend-examples = { run = "env -u CC -u CXX python tools/scripts/cargo.py build -p apxm-frontend-python -p apxm-frontend-typescript --release && python tools/scripts/install_frontend_native.py python && npm --prefix crates/compiler/frontend/typescript run build && python tools/scripts/install_frontend_native.py typescript && rm -rf crates/compiler/frontend/python/build crates/compiler/frontend/python/apxm.egg-info .apxm/frontend-example-python .apxm/frontend-example-packages && mkdir -p .apxm/frontend-example-python .apxm/frontend-example-packages && python -m pip wheel --no-deps --no-build-isolation --wheel-dir .apxm/frontend-example-packages crates/compiler/frontend/python && python -m pip install --no-deps --target .apxm/frontend-example-python .apxm/frontend-example-packages/*.whl && npm --prefix examples/agents/conversational ci --ignore-scripts --no-audit --no-fund && npm --prefix examples/agents/conversational run build && npm --prefix examples/agents/conversational run build:python && npm --prefix examples/agents/conversational run compile >/dev/null && npm --prefix examples/agents/conversational run run >/dev/null && PYTHONPATH=\"$PWD/.apxm/frontend-example-python\" npm --prefix examples/agents/conversational run compile:python >/dev/null && PYTHONPATH=\"$PWD/.apxm/frontend-example-python\" npm --prefix examples/agents/conversational run run:python >/dev/null && npm --prefix examples/agents/coder ci --ignore-scripts --no-audit --no-fund && npm --prefix examples/agents/coder run build && npm --prefix examples/agents/coder run compile >/dev/null && npm --prefix examples/agents/coder run run >/dev/null && PYTHONPATH=.apxm/frontend-example-python python -m pytest examples/agents/conversational/tests/test_parity.py -q && python examples/agents/coder/tests/acceptance.py", description = "Build, compile, run, and validate the lockfile-backed conversational and Coder repository examples", group = "Build & Test" }
+test-frontend-examples = { run = "env -u CC -u CXX python tools/scripts/cargo.py build -p apxm-frontend-python -p apxm-frontend-typescript --release && python tools/scripts/install_frontend_native.py python && npm --prefix crates/compiler/frontend/typescript run build && python tools/scripts/install_frontend_native.py typescript && rm -rf crates/compiler/frontend/python/build crates/compiler/frontend/python/apxm.egg-info .apxm/frontend-example-python .apxm/frontend-example-packages && mkdir -p .apxm/frontend-example-python .apxm/frontend-example-packages && pip wheel --no-deps --no-build-isolation --wheel-dir .apxm/frontend-example-packages crates/compiler/frontend/python && pip install --no-deps --target .apxm/frontend-example-python .apxm/frontend-example-packages/*.whl && npm --prefix examples/agents/conversational ci --ignore-scripts --no-audit --no-fund && npm --prefix examples/agents/conversational run build && npm --prefix examples/agents/conversational run build:python && npm --prefix examples/agents/conversational run compile >/dev/null && npm --prefix examples/agents/conversational run run >/dev/null && PYTHONPATH=\"$PWD/.apxm/frontend-example-python\" npm --prefix examples/agents/conversational run compile:python >/dev/null && PYTHONPATH=\"$PWD/.apxm/frontend-example-python\" npm --prefix examples/agents/conversational run run:python >/dev/null && npm --prefix examples/agents/coder ci --ignore-scripts --no-audit --no-fund && npm --prefix examples/agents/coder run build && npm --prefix examples/agents/coder run compile >/dev/null && npm --prefix examples/agents/coder run run >/dev/null && PYTHONPATH=.apxm/frontend-example-python pytest examples/agents/conversational/tests/test_parity.py -q && python examples/agents/coder/tests/acceptance.py", description = "Build, compile, run, and validate the lockfile-backed conversational and Coder repository examples", group = "Build & Test" }
 build-frontend-native = { run = "env -u CC -u CXX -u DYLD_LIBRARY_PATH -u DYLD_FALLBACK_LIBRARY_PATH python tools/scripts/cargo.py build -p apxm-frontend-python --release && env -u CC -u CXX -u DYLD_LIBRARY_PATH -u DYLD_FALLBACK_LIBRARY_PATH python tools/scripts/install_frontend_native.py python", description = "Build the canonical PyO3 authoring bridge (_native.so) reproducibly from source", group = "Build & Test" }
 build-example-artifacts = { run = "env -u CC -u CXX -u DYLD_LIBRARY_PATH -u DYLD_FALLBACK_LIBRARY_PATH python tools/scripts/cargo.py build -p apxm-frontend-python -p apxm-frontend-typescript --release && python tools/scripts/install_frontend_native.py python && npm --prefix crates/compiler/frontend/typescript run build && python tools/scripts/install_frontend_native.py typescript && npm --prefix examples/agents/conversational ci --ignore-scripts --no-audit --no-fund && npm --prefix examples/agents/conversational run build && python tools/scripts/build_example_artifacts.py --python-package-root crates/compiler/frontend/python", description = "Build deterministic repository example executable artifacts from the lockfile-backed generic frontends", group = "Build & Test" }
 check-example-artifacts = { run = "python tools/scripts/build_example_artifacts.py --python-package-root crates/compiler/frontend/python --check", description = "Drift-check repository example executable artifacts", group = "Build & Test" }

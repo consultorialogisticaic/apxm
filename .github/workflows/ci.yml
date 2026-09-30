@@ -1,0 +1,212 @@
+name: apxm-ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    types: [opened, reopened, synchronize, ready_for_review]
+  workflow_dispatch:
+    inputs:
+      prepare_release_descriptors:
+        description: Build AMD64 artifacts and upload refreshed release descriptors
+        required: true
+        default: false
+        type: boolean
+      publish_release_images:
+        description: Build, verify and push the Linux AMD64 service image pair
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: apxm-ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  service-gate:
+    # A self-hosted runner must never execute code from an untrusted fork.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    # Pull requests and non-main manual runs use GitHub-hosted ephemeral runners;
+    # main releases remain on the isolated self-hosted build boundary.
+    runs-on: ${{ github.ref == 'refs/heads/main' && 'clic-build' || 'ubuntu-24.04' }}
+    timeout-minutes: 120
+    # Hosted runs do not expose the production kernel boundary. Main releases are
+    # enforced on the dedicated self-hosted build boundary.
+    env:
+      APXM_CAPTURE_CONFINEMENT: ${{ github.ref == 'refs/heads/main' && 'enforce' || 'permissive' }}
+    steps:
+
+      - name: Install Nix on hosted runners
+        if: github.ref != 'refs/heads/main'
+        uses: DeterminateSystems/nix-installer-action@786fff0690178f1234e4e1fe9b536e94f5433196 # v20
+
+      - name: Checkout exact event revision
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Validate the locked Nix environment
+        run: nix flake check --all-systems --no-update-lock-file
+
+      - name: Run the APXM service-owner gate
+        run: nix develop --command dekk agents check-service
+
+  release-artifact:
+    # The package is a run-scoped immutable artifact, not a mutable release.
+    # Promotion to a runtime release remains an explicit owner operation.
+    needs: service-gate
+    if: >-
+      (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) &&
+      !(github.event_name == 'workflow_dispatch' && inputs.prepare_release_descriptors)
+    # Pull requests and non-main manual runs use GitHub-hosted ephemeral runners;
+    # main releases remain on the isolated self-hosted build boundary.
+    runs-on: ${{ github.ref == 'refs/heads/main' && 'clic-build' || 'ubuntu-24.04' }}
+    timeout-minutes: 120
+    # Hosted runs do not expose the production kernel boundary. Main releases are
+    # enforced on the dedicated self-hosted build boundary.
+    env:
+      APXM_CAPTURE_CONFINEMENT: ${{ github.ref == 'refs/heads/main' && 'enforce' || 'permissive' }}
+    steps:
+
+      - name: Install Nix on hosted runners
+        if: github.ref != 'refs/heads/main'
+        uses: DeterminateSystems/nix-installer-action@786fff0690178f1234e4e1fe9b536e94f5433196 # v20
+
+      - name: Checkout exact event revision
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Prepare the exact AMD64 release cohort
+        run: nix develop --command dekk agents prepare-release-descriptors
+
+      - name: Package and qualify the immutable APXM cohort
+        run: nix develop --command dekk agents package-release
+
+      - name: Verify the packaged APXM cohort as a consumer
+        run: nix develop --command dekk agents verify-package
+
+      - name: Upload the immutable APXM cohort
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: apxm-release-${{ github.event.pull_request.head.sha || github.sha }}
+          path: .apxm/release-artifacts
+          if-no-files-found: error
+          include-hidden-files: true
+          retention-days: 30
+
+  release-descriptors:
+    needs: service-gate
+    if: github.event_name == 'workflow_dispatch' && inputs.prepare_release_descriptors
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      APXM_CAPTURE_CONFINEMENT: permissive
+    steps:
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@786fff0690178f1234e4e1fe9b536e94f5433196 # v20
+
+      - name: Checkout exact event revision
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Prepare release descriptors from AMD64 artifacts
+        run: nix develop --command dekk agents prepare-release-descriptors
+
+      - name: Upload refreshed release descriptors
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: apxm-release-descriptors-${{ github.sha }}
+          path: |
+            deploy/services/source-revision.v1.json
+            contracts/descriptors/apxm.agents-owner-descriptor.v1.json
+            contracts/descriptors/apxm.agents-owner-descriptor.v1.sha256
+            contracts/services/manifests/apxm.agents-service-release-manifest.v1.json
+          if-no-files-found: error
+          retention-days: 7
+
+  release-images:
+    needs: release-descriptors
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      inputs.prepare_release_descriptors && inputs.publish_release_images
+    # Non-main candidates stay on hosted ephemeral runners like their gate.
+    runs-on: ${{ github.ref == 'refs/heads/main' && 'clic-build' || 'ubuntu-24.04' }}
+    timeout-minutes: 240
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Install Nix on hosted runners
+        if: github.ref != 'refs/heads/main'
+        uses: DeterminateSystems/nix-installer-action@786fff0690178f1234e4e1fe9b536e94f5433196 # v20
+
+      - name: Checkout exact event revision
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Select the qualified release descriptors
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: apxm-release-descriptors-${{ github.sha }}
+          path: .
+
+      - name: Build the Linux AMD64 service image pair
+        run: >-
+          nix develop --command dekk agents build-images
+          --platform linux/amd64
+          --repository-prefix ghcr.io/consultorialogisticaic/apxm
+          --qualified-descriptor-overlay
+
+      - name: Verify the built image pair from the consumer boundary
+        run: |
+          # shellcheck disable=SC2016
+          nix develop --command bash -euo pipefail -c '
+            dekk agents verify-images \
+              --repository-prefix ghcr.io/consultorialogisticaic/apxm \
+              > image-evidence-verification.json
+            python -m json.tool image-evidence-verification.json >/dev/null
+          '
+
+      - name: Publish the immutable image pair
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # shellcheck disable=SC2016
+          nix develop --command bash -euo pipefail -c '
+            revision="$(jq -r .source_revision deploy/services/source-revision.v1.json)"
+            suffix="${revision:0:8}"
+            printf "%s" "$GHCR_TOKEN" | docker login ghcr.io \
+              -u "${{ github.actor }}" --password-stdin
+            for service in compilation-service runtime-service; do
+              repository="ghcr.io/consultorialogisticaic/apxm/$service"
+              docker push "$repository:$suffix"
+              docker buildx imagetools inspect --raw "$repository:$suffix" \
+                > "image-evidence-$service.json"
+            done
+            docker logout
+          '
+
+      - name: Upload the verified image evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: apxm-release-images-${{ github.sha }}
+          path: |
+            image-evidence-verification.json
+            image-evidence-compilation-service.json
+            image-evidence-runtime-service.json
+          if-no-files-found: error
+          retention-days: 30

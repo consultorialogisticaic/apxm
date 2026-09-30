@@ -23,7 +23,7 @@ Run these in order. If any fail, do **not** claim completion:
    - `dekk agents test-cli` if `crates/tools/cli/` changed.
    - `dekk agents test-python-frontend` if
      `crates/compiler/frontend/python/` changed.
-3. **Doctor**: `dekk agents doctor`. Catches a drifted conda env or
+3. **Doctor**: `dekk agents doctor`. Catches a drifted Nix shell or
    stale MLIR.
 4. **Commit-message lint** for any queued commits:
    `dekk agents commit-lint --range origin/main..HEAD`.
