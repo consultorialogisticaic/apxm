@@ -26,6 +26,14 @@ including Clippy and both frontend suites. This is local fixture inference
 evidence, not hosted-provider qualification or a Linux release build.
 No release selection changed.
 
+The subsequent native `preflight-release` attempt passed all 16 executable
+service-gate steps but stopped at commit metadata before release packaging:
+the published manual-build commit used `ci`, which the owner lint does not
+accept. Published history is retained; the next evidence commit uses the
+documented vocabulary. Manual candidate images still require the complete
+Linux gate, exact descriptor preparation and consumer image verification.
+They do not activate the persistent worker or select a consumer runtime pin.
+
 Audit date: 2026-08-15
 
 Scope: the `apxm/authorable-agents` tree, including the S0–S12 plan, checked-in
