@@ -61,6 +61,29 @@ def instructions(text: str) -> list[str]:
 
 
 class ServiceImageContractTests(unittest.TestCase):
+    def test_image_pair_requires_one_manifest_and_individual_verification_remains_supported(self):
+        images = self.images
+        revision = "a" * 40
+        manifests = {service: "sha256:" + "1" * 64 for service in images.SERVICES}
+        def verify(_root, service, _tag):
+            return {"service": service, "qualified": True,
+                    "release_manifest_digest": manifests[service], "diagnostics": []}
+        with mock.patch.object(images, "declared_revision", return_value=revision), \
+                mock.patch.object(images, "verify_service_image", side_effect=verify):
+            paired = images.verify_images(Path("/owner"), prefix="apxm", services=tuple(images.SERVICES))
+            self.assertTrue(paired["qualified"])
+            self.assertTrue(all(image["qualified"] for image in paired["images"]))
+            manifests["runtime-service"] = "sha256:" + "2" * 64
+            mismatched = images.verify_images(Path("/owner"), prefix="apxm", services=tuple(images.SERVICES))
+            self.assertFalse(mismatched["qualified"])
+            self.assertTrue(all(not image["qualified"] for image in mismatched["images"]))
+            self.assertTrue(all(image["diagnostics"][0]["code"] == "image-pair-manifest-mismatch"
+                                for image in mismatched["images"]))
+            for service in images.SERVICES:
+                individual = images.verify_images(Path("/owner"), prefix="apxm", services=(service,))
+                self.assertTrue(individual["qualified"])
+                self.assertEqual(individual["images"][0]["diagnostics"], [])
+
     def test_export_binds_archive_to_verified_cohort_and_refuses_changes(self) -> None:
         images = self.images
         with tempfile.TemporaryDirectory() as directory:

@@ -621,6 +621,15 @@ def verify_images(root: Path, *, prefix: str, services: tuple[str, ...]) -> dict
         verify_service_image(root, service, _tag(prefix, service, revision))
         for service in services
     ]
+    if set(SERVICES).issubset(services) and len({
+        image["release_manifest_digest"] for image in images
+    }) != 1:
+        for image in images:
+            image["qualified"] = False
+            image["diagnostics"].append({
+                "code": "image-pair-manifest-mismatch",
+                "message": "Compilation and Runtime images must publish the same release manifest",
+            })
     return {
         "schema": "apxm.agents.service-images-verification.v1",
         "semantic_owner": "agents",
