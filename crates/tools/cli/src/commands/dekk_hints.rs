@@ -5,5 +5,3 @@
 //! the same `cfg` as that path, so every hint here has a live caller.
 
 pub const APXM_ENV_HINT: &str = "dekk agents ...";
-pub const INSTALL_NO_INTERACTIVE: &str = "dekk agents install --no-interactive";
-pub const DOCTOR: &str = "dekk agents doctor";
