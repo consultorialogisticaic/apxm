@@ -101,9 +101,6 @@
             # execute test binaries, so select persistent storage only when it
             # accepts execution; otherwise use the executable home filesystem.
             cargo_root="''${HOME}/.cache"
-            if test -d /srv/clic && test -w /srv/clic; then
-              cargo_root="/srv/clic"
-            fi
             cargo_probe="''${cargo_root}/.apxm-exec-probe-''${USER:-unknown}"
             mkdir -p "$cargo_root"
             printf '#!/bin/sh\nexit 0\n' > "$cargo_probe"
@@ -122,6 +119,10 @@
             else
               rm -f "$cargo_probe"
               export CARGO_TARGET_DIR="''${TMPDIR:-/tmp}/apxm-target-''${USER:-unknown}"
+            fi
+            if test -z "''${APXM_CARGO_TARGET_DIR:-}"; then
+              mkdir -p "$CARGO_TARGET_DIR"
+              export APXM_CARGO_TARGET_DIR="$(TMPDIR="$CARGO_TARGET_DIR" PYTHONPATH="$PWD/tools/scripts" python -c 'from pathlib import Path; import cargo; print(cargo._target_dir(Path.cwd()))')"
             fi
             export PYTHONPATH="$PWD/crates/compiler/frontend/python:$PWD/tools"
             if test "$(uname -s)" = Linux; then
