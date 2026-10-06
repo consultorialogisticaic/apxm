@@ -600,7 +600,7 @@ mod platform {
         let created = unsafe {
             libc::syscall(
                 SYS_LANDLOCK_CREATE_RULESET,
-                &attr as *const RulesetAttr,
+                &raw const attr,
                 std::mem::size_of::<RulesetAttr>(),
                 0_u32,
             )
@@ -628,7 +628,7 @@ mod platform {
                     SYS_LANDLOCK_ADD_RULE,
                     ruleset.as_raw_fd(),
                     LANDLOCK_RULE_PATH_BENEATH,
-                    &rule as *const PathBeneathAttr,
+                    &raw const rule,
                     0_u32,
                 )
             };
@@ -810,23 +810,22 @@ mod platform {
                 libc::SYS_seccomp,
                 SECCOMP_SET_MODE_FILTER,
                 0_u32,
-                &fprog as *const libc::sock_fprog,
+                &raw const fprog,
             )
         };
         if applied == 0 {
             return Ok(());
         }
-        let applied = unsafe {
-            libc::prctl(
-                libc::PR_SET_SECCOMP,
-                SECCOMP_MODE_FILTER,
-                &fprog as *const libc::sock_fprog,
-            )
-        };
+        let applied =
+            unsafe { libc::prctl(libc::PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &raw const fprog) };
         if applied == 0 {
             Ok(())
         } else {
-            Err(io::Error::last_os_error())
+            let error = io::Error::last_os_error();
+            Err(io::Error::new(
+                error.kind(),
+                format!("seccomp filter installation failed: {error}"),
+            ))
         }
     }
 
@@ -841,7 +840,7 @@ mod platform {
             rlim_cur: 0,
             rlim_max: 0,
         };
-        let bound = if unsafe { libc::getrlimit(resource, &mut held) } == 0
+        let bound = if unsafe { libc::getrlimit(resource, &raw mut held) } == 0
             && held.rlim_max != libc::RLIM_INFINITY
         {
             held.rlim_max
@@ -852,10 +851,14 @@ mod platform {
             rlim_cur: soft.min(bound),
             rlim_max: hard.min(bound),
         };
-        if unsafe { libc::setrlimit(resource, &limit) } == 0 {
+        if unsafe { libc::setrlimit(resource, &raw const limit) } == 0 {
             Ok(())
         } else {
-            Err(io::Error::last_os_error())
+            let error = io::Error::last_os_error();
+            Err(io::Error::new(
+                error.kind(),
+                format!("setrlimit({resource}): {error}"),
+            ))
         }
     }
 
@@ -864,17 +867,21 @@ mod platform {
             libc::RLIMIT_CPU,
             ceilings.cpu_seconds,
             ceilings.cpu_seconds + 5,
-        )?;
-        set_ceiling(libc::RLIMIT_DATA, ceilings.data_bytes, ceilings.data_bytes)?;
+        )
+        .map_err(|error| io::Error::new(error.kind(), format!("CPU ceiling: {error}")))?;
+        set_ceiling(libc::RLIMIT_DATA, ceilings.data_bytes, ceilings.data_bytes)
+            .map_err(|error| io::Error::new(error.kind(), format!("data ceiling: {error}")))?;
         set_ceiling(
             libc::RLIMIT_FSIZE,
             ceilings.file_size_bytes,
             ceilings.file_size_bytes,
-        )?;
-        set_ceiling(libc::RLIMIT_NPROC, ceilings.tasks, ceilings.tasks)?;
+        )
+        .map_err(|error| io::Error::new(error.kind(), format!("file-size ceiling: {error}")))?;
+        set_ceiling(libc::RLIMIT_NPROC, ceilings.tasks, ceilings.tasks)
+            .map_err(|error| io::Error::new(error.kind(), format!("task ceiling: {error}")))?;
         set_ceiling(libc::RLIMIT_CORE, 0, 0)
+            .map_err(|error| io::Error::new(error.kind(), format!("core ceiling: {error}")))
     }
-
     pub(super) fn readiness(mode: ConfinementMode) -> ConfinementReadiness {
         let abi = landlock_abi();
         let seccomp = seccomp_supported();
@@ -973,14 +980,13 @@ mod platform {
                     enter_ceilings(ceilings)?;
                 }
                 if (ruleset.is_some() || filter.is_some())
-                    && unsafe { libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) } != 0
+                    && libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0
                 {
                     return Err(io::Error::last_os_error());
                 }
                 if let Some(ruleset) = ruleset.as_ref() {
-                    let entered = unsafe {
-                        libc::syscall(SYS_LANDLOCK_RESTRICT_SELF, ruleset.as_raw_fd(), 0_u32)
-                    };
+                    let entered =
+                        libc::syscall(SYS_LANDLOCK_RESTRICT_SELF, ruleset.as_raw_fd(), 0_u32);
                     if entered != 0 {
                         return Err(io::Error::last_os_error());
                     }

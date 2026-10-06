@@ -113,6 +113,36 @@ class ReleaseQualificationTests(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls.qualification = load_module()
 
+    def _prepare_descriptor_overlay(self, root: Path, artifacts: dict[str, Path]) -> None:
+        for relative in self.qualification.RELEASE_DESCRIPTOR_RELS:
+            path = root / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("{}\n", encoding="utf-8")
+        subprocess.run(
+            ["git", "-C", str(root), "add", "deploy", "contracts"],
+            check=True,
+            env=git_environment(),
+        )
+        subprocess.run(
+            ["git", "-C", str(root), "commit", "-qm", "track descriptor inputs"],
+            check=True,
+            env=git_environment(),
+        )
+        revision = subprocess.run(
+            ["git", "-C", str(root), "rev-parse", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+            env=git_environment(),
+        ).stdout.strip()
+        self.qualification.generate_descriptors(
+            root,
+            compilation_service_path=str(artifacts["compilation-service"]),
+            runtime_service_path=str(artifacts["runtime-service"]),
+            output_dir=root,
+            source_revision=revision,
+        )
+
     def test_missing_publishable_artifact_fails_closed_with_actionable_diagnostic(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -574,6 +604,35 @@ class ReleaseQualificationTests(unittest.TestCase):
                 run_gates=False,
             )
         self.assertFalse(result.ok)
+        self.assertTrue(any(item.code == "dirty-checkout" for item in result.diagnostics))
+
+    def test_exact_head_descriptor_overlay_can_be_explicitly_qualified(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            _, artifacts = make_clean_owner_checkout(root)
+            self._prepare_descriptor_overlay(root, artifacts)
+            result = self.qualification.qualify(
+                root,
+                compilation_service_path=str(artifacts["compilation-service"]),
+                runtime_service_path=str(artifacts["runtime-service"]),
+                run_gates=False,
+                qualified_descriptor_overlay=True,
+            )
+        self.assertTrue(result.ok, [item.render() for item in result.diagnostics])
+
+    def test_descriptor_overlay_does_not_admit_unrelated_changes(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            _, artifacts = make_clean_owner_checkout(root)
+            self._prepare_descriptor_overlay(root, artifacts)
+            (root / "README.md").write_text("unrelated change\n", encoding="utf-8")
+            result = self.qualification.qualify(
+                root,
+                compilation_service_path=str(artifacts["compilation-service"]),
+                runtime_service_path=str(artifacts["runtime-service"]),
+                run_gates=False,
+                qualified_descriptor_overlay=True,
+            )
         self.assertTrue(any(item.code == "dirty-checkout" for item in result.diagnostics))
 
     def test_generation_refuses_to_overwrite_different_release_input(self) -> None:

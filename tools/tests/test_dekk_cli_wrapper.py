@@ -72,6 +72,26 @@ class DekkCliWrapperTests(unittest.TestCase):
         self.assertIn("requires an exact `cargo run` target", rendered)
         self.assertIn("`--bin apxm`", rendered)
 
+    def test_ci_debug_defaults_preserve_explicit_and_local_profiles(self) -> None:
+        for initial, expected in (
+            ({"CI": "true"}, ("0", "0")),
+            (
+                {"CI": "true", "CARGO_PROFILE_DEV_DEBUG": "2", "CARGO_PROFILE_TEST_DEBUG": "1"},
+                ("2", "1"),
+            ),
+            ({}, (None, None)),
+        ):
+            with self.subTest(initial=initial), mock.patch.dict(
+                self.cargo_wrapper.os.environ, initial, clear=True
+            ):
+                env = self.cargo_wrapper._cargo_env(
+                    REPOSITORY_ROOT, Path("/tmp/apxm-test-target"), ["cargo", "test"]
+                )
+                self.assertEqual(
+                    (env.get("CARGO_PROFILE_DEV_DEBUG"), env.get("CARGO_PROFILE_TEST_DEBUG")),
+                    expected,
+                )
+
     def test_cargo_wrapper_uses_checked_in_lockfile_by_default(self) -> None:
         with mock.patch.object(
             self.cargo_wrapper.subprocess,

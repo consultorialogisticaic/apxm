@@ -14,8 +14,8 @@ for typo fixes or single-line edits.
 
 ## What this skill does
 
-1. **Verify env** — `dekk agents doctor`. Catches a misconfigured conda
-   env, stale MLIR build, or missing `LLM_GATEWAY_KEY` before any work
+1. **Verify env** — `dekk agents doctor`. Catches a misconfigured Nix
+   shell, stale MLIR build, or missing `LLM_GATEWAY_KEY` before any work
    starts.
 2. **Surface live AIS op list** if AIS dialect work is anticipated —
    `dekk agents ops list`. Confirms what's actually defined in

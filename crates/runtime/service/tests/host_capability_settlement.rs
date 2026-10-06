@@ -87,8 +87,9 @@ fn start_artifact_with_input(
     artifact: Vec<u8>,
     input: serde_json::Value,
 ) -> Parked {
-    let digest = service.admit_artifact(artifact.clone());
-    assert!(!digest.is_empty(), "the fixture artifact is admitted");
+    let digest = service
+        .try_admit_artifact(artifact.clone())
+        .expect("the fixture artifact is admitted");
     let created = service
         .handle(
             &handshake(),
@@ -1325,6 +1326,120 @@ async def Condition(agent, input):
                 ProgramInvocationStatus::CommittedReturn
             );
             assert_eq!(committed_output(&mut parked.service, &invocation), input);
+        }
+    }
+}
+
+#[test]
+fn compiled_model_request_uses_entrypoint_input_without_synthetic_values() {
+    use apxm_runtime_protocol::ProgramInvocationStatus;
+    use apxm_source_port::{
+        Frontend, FrontendDrivers, FrontendRoots, SourceBundleRequest, compile_source_bundle,
+    };
+
+    if isolated_model_roster(
+        "compiled_model_request_uses_entrypoint_input_without_synthetic_values",
+        Some("entrypoint.model"),
+    ) {
+        return;
+    }
+    let root = fixture_dir().ancestors().nth(3).unwrap().to_path_buf();
+    let roots = FrontendRoots::new(
+        root.join("crates/compiler/frontend/python"),
+        root.join("crates/compiler/frontend/typescript"),
+    );
+    let drivers = FrontendDrivers::new(
+        root.join(".dekk/env/bin/python"),
+        root.join(".dekk/env/bin/node"),
+    );
+    for frontend in [Frontend::Typescript, Frontend::Python] {
+        let source = match frontend {
+            Frontend::Typescript => {
+                r#"import { Agent, Model } from "@apxm/frontend";
+type Input = {prompt: string};
+type Output = {content: string};
+const Review = Model<Input, Output>("entrypoint.model");
+export const Reviewer = Agent<Input, Output>({name: "Reviewer", model: Review, async run(agent, input) {
+  return await Review(input);
+}});
+"#
+            }
+            Frontend::Python => {
+                r#"from typing import TypedDict
+from apxm_program import Agent, Model
+class Input(TypedDict):
+    prompt: str
+class Output(TypedDict):
+    content: str
+Review = Model[Input, Output]("entrypoint.model")
+@Agent(input=Input, output=Output, model=Review)
+async def Reviewer(agent, input):
+    return await Review(input)
+"#
+            }
+        };
+        let assembled = match frontend {
+            Frontend::Typescript => {
+                source.replace("Review(input)", "Review({prompt: input.prompt})")
+            }
+            Frontend::Python => {
+                source.replace("Review(input)", "Review({\"prompt\": input[\"prompt\"]})")
+            }
+        };
+        let artifacts = [source, assembled.as_str()].map(|source| {
+            let compiled = compile_source_bundle(
+                &SourceBundleRequest::new(frontend, "Reviewer", source),
+                &roots,
+                &drivers,
+            )
+            .expect("the typed model-backed Agent compiles");
+            ExecutableArtifact::from_graph_and_air(&compiled.frontend_graph, &compiled.air)
+                .unwrap()
+                .encode()
+                .unwrap()
+        });
+        for single_shot in [false, true] {
+            let mut previous = None;
+            for prompt in ["first exact prompt", "second exact prompt"] {
+                let outputs = artifacts.each_ref().map(|artifact| {
+                    let mut service = RuntimeService::in_memory()
+                        .with_embedded_read_access()
+                        .with_output_access_scope_ref("scope.host-capability".to_owned());
+                    if single_shot {
+                        service = service.with_single_shot_invocations();
+                    }
+                    let mut parked = start_artifact_with_input(
+                        "invocation.model.entrypoint",
+                        service,
+                        artifact.clone(),
+                        serde_json::json!({"prompt": prompt}),
+                    );
+                    let invocation = parked.invocation.clone();
+                    assert_eq!(
+                        invocation_status(&mut parked.service, &invocation),
+                        ProgramInvocationStatus::CommittedReturn
+                    );
+                    let stream = observations(&mut parked.service, &invocation);
+                    assert_eq!(of_kind(&stream, ObservationKind::ModelAttempt).len(), 1);
+                    committed_output(&mut parked.service, &invocation)
+                });
+                // Reconstructing the same authored request must not change the
+                // backend result; no test preloads either request SSA identity.
+                assert_eq!(outputs[0], outputs[1]);
+                assert!(
+                    outputs[0]["content"]
+                        .as_str()
+                        .unwrap()
+                        .starts_with("apxm-fixture:")
+                );
+                if let Some(previous) = previous {
+                    assert_ne!(
+                        previous, outputs[0],
+                        "the actual prompt must reach inference"
+                    );
+                }
+                previous = Some(outputs[0].clone());
+            }
         }
     }
 }

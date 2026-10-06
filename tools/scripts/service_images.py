@@ -36,12 +36,13 @@ import shutil
 import stat
 import subprocess
 import sys
+import tarfile
 import tempfile
 import time
 from pathlib import Path
 from typing import Any
 
-from release_qualification import _discover_shipped_schemas
+from release_qualification import LOCAL_ARTIFACT_MANIFEST_REL, _discover_shipped_schemas, verify_package
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 
@@ -78,6 +79,12 @@ TREE_DIGEST_LABEL = "io.apxm.source-tree-digest"
 PROVENANCE_DIGEST_LABEL = "io.apxm.source-provenance-digest"
 CANDIDATE_SCHEMA = "apxm.agents.service-images-candidate.v1"
 OWNER_SIDECAR_REL = OWNER_DESCRIPTOR_REL.with_suffix(".sha256")
+RELEASE_DESCRIPTOR_RELS = (
+    SOURCE_DESCRIPTOR_REL,
+    OWNER_DESCRIPTOR_REL,
+    OWNER_SIDECAR_REL,
+    RELEASE_MANIFEST_REL,
+)
 
 HEX40 = re.compile(r"^[0-9a-f]{40}$")
 DEFAULT_PLATFORM = "linux/arm64"
@@ -131,14 +138,25 @@ def declared_revision(root: Path) -> str:
     return revision
 
 
-def _require_publishable_checkout(root: Path, revision: str) -> None:
+def _require_publishable_checkout(
+    root: Path, revision: str, *, qualified_descriptor_overlay: bool = False
+) -> None:
     """Refuse to build an image from a tree that is not the cohort."""
 
     status = _run(["git", "-C", str(root), "status", "--porcelain"], capture=True)
-    if status.strip():
+    status_lines = {line for line in status.splitlines() if line}
+    allowed_overlay = {f" M {relative.as_posix()}" for relative in RELEASE_DESCRIPTOR_RELS}
+    if status_lines and not (
+        qualified_descriptor_overlay and status_lines <= allowed_overlay
+    ):
         raise ImageError(
             "cannot build service images from a dirty checkout; the image regenerates the "
             "cohort's descriptors and would not match the ones committed here"
+        )
+    head = _run(["git", "-C", str(root), "rev-parse", "HEAD"], capture=True).strip()
+    if qualified_descriptor_overlay and revision != head:
+        raise ImageError(
+            f"qualified release descriptors publish {revision}, not exact checkout {head}"
         )
     ancestry = subprocess.run(
         ["git", "-C", str(root), "merge-base", "--is-ancestor", revision, "HEAD"],
@@ -146,7 +164,6 @@ def _require_publishable_checkout(root: Path, revision: str) -> None:
         capture_output=True,
     )
     if ancestry.returncode != 0:
-        head = _run(["git", "-C", str(root), "rev-parse", "HEAD"], capture=True).strip()
         raise ImageError(
             f"the descriptors publish {revision}, which is not an ancestor of {head}; "
             "regenerate the descriptors before building images"
@@ -236,9 +253,14 @@ def build_images(
     prefix: str,
     services: tuple[str, ...],
     no_cache: bool = False,
+    qualified_descriptor_overlay: bool = False,
 ) -> dict[str, Any]:
     revision = declared_revision(root)
-    _require_publishable_checkout(root, revision)
+    _require_publishable_checkout(
+        root,
+        revision,
+        qualified_descriptor_overlay=qualified_descriptor_overlay,
+    )
     return {
         "schema": "apxm.agents.service-images-build.v1",
         "semantic_owner": "agents",
@@ -599,6 +621,15 @@ def verify_images(root: Path, *, prefix: str, services: tuple[str, ...]) -> dict
         verify_service_image(root, service, _tag(prefix, service, revision))
         for service in services
     ]
+    if set(SERVICES).issubset(services) and len({
+        image["release_manifest_digest"] for image in images
+    }) != 1:
+        for image in images:
+            image["qualified"] = False
+            image["diagnostics"].append({
+                "code": "image-pair-manifest-mismatch",
+                "message": "Compilation and Runtime images must publish the same release manifest",
+            })
     return {
         "schema": "apxm.agents.service-images-verification.v1",
         "semantic_owner": "agents",
@@ -607,6 +638,70 @@ def verify_images(root: Path, *, prefix: str, services: tuple[str, ...]) -> dict
         "qualified": all(image["qualified"] for image in images),
         "images": images,
     }
+
+
+def export_images(root: Path, *, prefix: str, output: Path,
+                  run_id: str, run_attempt: str, release_files: Path) -> dict[str, Any]:
+    """Export a verified cohort as credential-free OCI publication inputs."""
+    output = output.resolve()
+    if not output.is_relative_to((root / ".apxm").resolve()):
+        raise ImageError("image handoff must be under .apxm")
+    if not all(re.fullmatch(r"[1-9][0-9]*", value) for value in (run_id, run_attempt)):
+        raise ImageError("image handoff requires an explicit workflow run and attempt")
+    if not release_files.is_dir() or release_files.is_symlink():
+        raise ImageError("verified binary release files are required")
+    evidence = verify_images(root, prefix=prefix, services=tuple(SERVICES))
+    if not evidence["qualified"]:
+        raise ImageError("unqualified images cannot be exported")
+    package_manifests = list(release_files.rglob(LOCAL_ARTIFACT_MANIFEST_REL.name))
+    if len(package_manifests) != 1:
+        raise ImageError("one exact binary release package is required")
+    binary_evidence = verify_package(package_manifests[0].parent)
+    if not binary_evidence["qualified"] or binary_evidence["source_revision"] != evidence["source_revision"]:
+        raise ImageError("binary release package is unqualified or belongs to a different revision")
+    output.mkdir(parents=True, exist_ok=False)
+    archives = {}
+    release_tag = "apxm-" + evidence["source_revision"]
+    for image in evidence["images"]:
+        if _inspect(image["tag"]).get("Id") != image["image_id"]:
+            raise ImageError("verified image changed before export")
+        archive = output / (image["service"] + ".oci.tar")
+        _run(["skopeo", "copy", "--all", "docker-daemon:" + image["tag"],
+              "oci-archive:" + str(archive)], capture=True)
+        if _inspect(image["tag"]).get("Id") != image["image_id"]:
+            raise ImageError("verified image changed during export")
+        digest = _run(["skopeo", "inspect", "--format", "{{.Digest}}",
+                       "oci-archive:" + str(archive)], capture=True).strip()
+        if not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
+            raise ImageError("exported OCI manifest has no immutable digest")
+        config = json.loads(_run(["skopeo", "inspect", "--config",
+                                  "oci-archive:" + str(archive)], capture=True))
+        if f"{config.get('os')}/{config.get('architecture')}" != image["platform"]:
+            raise ImageError("exported OCI platform changed")
+        labels = (config.get("config") or {}).get("Labels") or {}
+        if any(labels.get(key) != value for key, value in image["labels"].items()):
+            raise ImageError("exported OCI cohort labels changed")
+        with archive.open("rb") as stream:
+            checksum = hashlib.file_digest(stream, "sha256").hexdigest()
+        archives[image["service"]] = {"archive": archive.name,
+                                     "destination": prefix + "/" + image["service"] + ":" + release_tag,
+                                     "sha256": checksum, "digest": digest,
+                                     "image_id": image["image_id"], "platform": image["platform"]}
+    package = output / (release_tag + ".tar.gz")
+    with tarfile.open(package, "w:gz") as bundle:
+        for path in sorted(release_files.rglob("*")):
+            if path.is_symlink() or not (path.is_file() or path.is_dir()):
+                raise ImageError("release package contains an unsafe file")
+            bundle.add(path, arcname=str(path.relative_to(release_files)), recursive=False)
+    with package.open("rb") as stream:
+        package_digest = hashlib.file_digest(stream, "sha256").hexdigest()
+    payload = {"schema": "apxm.agents.oci-handoff.v1",
+               "source_revision": evidence["source_revision"],
+               "run_id": int(run_id), "run_attempt": int(run_attempt), "release_tag": release_tag,
+               "release_files": [{"path": package.name, "sha256": package_digest}],
+               "images": archives, "verification": evidence, "binary_verification": binary_evidence}
+    (output / "handoff.json").write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+    return payload
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -620,29 +715,47 @@ def main(argv: list[str] | None = None) -> int:
     build_parser.add_argument("--service", choices=tuple(SERVICES), action="append")
     build_parser.add_argument("--no-cache", action="store_true")
     build_parser.add_argument("--candidate", action="store_true", help="build an unpublished working-tree snapshot with exact source provenance")
+    build_parser.add_argument(
+        "--qualified-descriptor-overlay",
+        action="store_true",
+        help="allow only run-qualified descriptor files to differ from exact HEAD",
+    )
 
     verify_parser = subparsers.add_parser("verify", help="verify both service images as a consumer")
     verify_parser.add_argument("--repository-prefix", default=DEFAULT_REPOSITORY_PREFIX)
     verify_parser.add_argument("--service", choices=tuple(SERVICES), action="append")
     verify_parser.add_argument("--candidate-provenance", type=Path, help="verify an unpublished candidate receipt and its frozen source snapshot")
 
+    export_parser = subparsers.add_parser("export", help="export verified images for a separate trusted publisher")
+    export_parser.add_argument("--repository-prefix", default=DEFAULT_REPOSITORY_PREFIX)
+    export_parser.add_argument("--output-dir", type=Path, default=REPOSITORY_ROOT / ".apxm/oci-handoff")
+    export_parser.add_argument("--run-id", default=os.environ.get("GITHUB_RUN_ID", ""))
+    export_parser.add_argument("--run-attempt", default=os.environ.get("GITHUB_RUN_ATTEMPT", ""))
+    export_parser.add_argument("--release-files-dir", type=Path, default=REPOSITORY_ROOT / ".apxm/release-artifacts")
+
     args = parser.parse_args(argv)
     if shutil.which("docker") is None:
         print("docker is not on PATH; service images need a container runtime", file=sys.stderr)
         return 2
-    services = tuple(args.service) if args.service else tuple(SERVICES)
+    services = tuple(getattr(args, "service", None) or SERVICES)
     root = args.root.resolve()
     started = time.monotonic()
     try:
-        if args.mode == "build":
+        if args.mode == "export":
+            payload = export_images(root, prefix=args.repository_prefix, output=args.output_dir,
+                                    run_id=args.run_id, run_attempt=args.run_attempt,
+                                    release_files=args.release_files_dir)
+        elif args.mode == "build":
             builder = build_candidate_images if args.candidate else build_images
-            payload = builder(
-                root,
-                platform=args.platform,
-                prefix=args.repository_prefix,
-                services=services,
-                no_cache=args.no_cache,
-            )
+            build_args = {
+                "platform": args.platform,
+                "prefix": args.repository_prefix,
+                "services": services,
+                "no_cache": args.no_cache,
+            }
+            if not args.candidate:
+                build_args["qualified_descriptor_overlay"] = args.qualified_descriptor_overlay
+            payload = builder(root, **build_args)
         else:
             payload = (verify_candidate_images(root, args.candidate_provenance) if args.candidate_provenance
                 else verify_images(root, prefix=args.repository_prefix, services=services))

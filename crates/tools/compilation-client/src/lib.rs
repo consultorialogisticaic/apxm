@@ -797,7 +797,9 @@ fn map_open_error(error: rustix::io::Errno) -> FileReadError {
         FileReadError::NotFound
     } else if error.raw_os_error() == Some(rustix::io::Errno::LOOP.raw_os_error()) {
         FileReadError::Message("package snapshot refuses symlink".to_owned())
-    } else if error.kind() == std::io::ErrorKind::Unsupported {
+    } else if error.kind() == std::io::ErrorKind::Unsupported
+        || error.raw_os_error() == Some(rustix::io::Errno::NXIO.raw_os_error())
+    {
         FileReadError::Message("package snapshot refuses special file".to_owned())
     } else {
         FileReadError::Message(error.to_string())

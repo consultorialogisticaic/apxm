@@ -12,6 +12,7 @@ contract that makes such an image verifiable, and runs in the MLIR-free gate.
 from __future__ import annotations
 
 import importlib.util
+import hashlib
 import json
 import sys
 import tempfile
@@ -60,6 +61,96 @@ def instructions(text: str) -> list[str]:
 
 
 class ServiceImageContractTests(unittest.TestCase):
+    def test_image_pair_requires_one_manifest_and_individual_verification_remains_supported(self):
+        images = self.images
+        revision = "a" * 40
+        manifests = {service: "sha256:" + "1" * 64 for service in images.SERVICES}
+        def verify(_root, service, _tag):
+            return {"service": service, "qualified": True,
+                    "release_manifest_digest": manifests[service], "diagnostics": []}
+        with mock.patch.object(images, "declared_revision", return_value=revision), \
+                mock.patch.object(images, "verify_service_image", side_effect=verify):
+            paired = images.verify_images(Path("/owner"), prefix="apxm", services=tuple(images.SERVICES))
+            self.assertTrue(paired["qualified"])
+            self.assertTrue(all(image["qualified"] for image in paired["images"]))
+            manifests["runtime-service"] = "sha256:" + "2" * 64
+            mismatched = images.verify_images(Path("/owner"), prefix="apxm", services=tuple(images.SERVICES))
+            self.assertFalse(mismatched["qualified"])
+            self.assertTrue(all(not image["qualified"] for image in mismatched["images"]))
+            self.assertTrue(all(image["diagnostics"][0]["code"] == "image-pair-manifest-mismatch"
+                                for image in mismatched["images"]))
+            for service in images.SERVICES:
+                individual = images.verify_images(Path("/owner"), prefix="apxm", services=(service,))
+                self.assertTrue(individual["qualified"])
+                self.assertEqual(individual["images"][0]["diagnostics"], [])
+
+    def test_export_binds_archive_to_verified_cohort_and_refuses_changes(self) -> None:
+        images = self.images
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            release = root / "release"
+            release.mkdir()
+            (release / "binary").write_bytes(b"executable")
+            (release / images.LOCAL_ARTIFACT_MANIFEST_REL).write_text("{}")
+            image = {"service": "runtime-service", "tag": "apxm/runtime:deadbeef",
+                     "image_id": "sha256:" + "1" * 64, "platform": "linux/amd64",
+                     "labels": {images.REVISION_LABEL: "a" * 40}}
+            evidence = {"qualified": True, "source_revision": "a" * 40, "images": [image]}
+
+            def execute(command, **_kwargs):
+                if command[1] == "copy":
+                    Path(command[-1].removeprefix("oci-archive:")).write_bytes(b"image archive")
+                    return ""
+                if "--config" in command:
+                    return json.dumps({"os": "linux", "architecture": "amd64",
+                                       "config": {"Labels": image["labels"]}})
+                return "sha256:" + "2" * 64
+
+            with mock.patch.object(images, "verify_images", return_value=evidence), \
+                    mock.patch.object(images, "verify_package", return_value={"qualified": True, "source_revision": "a" * 40}), \
+                    mock.patch.object(images, "_inspect", return_value={"Id": image["image_id"]}), \
+                    mock.patch.object(images, "_run", side_effect=execute):
+                result = images.export_images(root, prefix="apxm", output=root / ".apxm/handoff", run_id="123", run_attempt="2", release_files=release)
+                self.assertEqual(result["images"]["runtime-service"]["digest"], "sha256:" + "2" * 64)
+                self.assertEqual(result["images"]["runtime-service"]["sha256"],
+                                 hashlib.sha256(b"image archive").hexdigest())
+                self.assertEqual(json.loads((root / ".apxm/handoff/handoff.json").read_text()), result)
+                self.assertEqual(result["run_id"], 123)
+                self.assertEqual(result["run_attempt"], 2)
+                self.assertEqual(result["images"]["runtime-service"]["destination"], "apxm/runtime-service:apxm-" + "a" * 40)
+            with mock.patch.object(images, "verify_images", return_value=evidence), \
+                    mock.patch.object(images, "verify_package", return_value={"qualified": True, "source_revision": "a" * 40}), \
+                    mock.patch.object(images, "_inspect", return_value={"Id": "changed"}):
+                with self.assertRaisesRegex(images.ImageError, "changed before export"):
+                    images.export_images(root, prefix="apxm", output=root / ".apxm/raced", run_id="123", run_attempt="2", release_files=release)
+            with mock.patch.object(images, "verify_images", return_value=evidence), \
+                    mock.patch.object(images, "verify_package", return_value={"qualified": True, "source_revision": "b" * 40}):
+                with self.assertRaisesRegex(images.ImageError, "different revision"):
+                    images.export_images(root, prefix="apxm", output=root / ".apxm/wrong-package", run_id="123", run_attempt="2", release_files=release)
+            evidence["qualified"] = False
+            with mock.patch.object(images, "verify_images", return_value=evidence):
+                with self.assertRaisesRegex(images.ImageError, "unqualified"):
+                    images.export_images(root, prefix="apxm", output=root / ".apxm/refused", run_id="123", run_attempt="2", release_files=release)
+
+    def test_workflow_hands_off_images_without_registry_credentials(self) -> None:
+        workflow = (REPOSITORY_ROOT / ".github/workflows/ci.yml").read_text()
+        self.assertNotIn("packages: write", workflow)
+        self.assertNotIn("secrets.GITHUB_TOKEN", workflow)
+        self.assertNotIn("docker push", workflow)
+        self.assertNotIn("ubuntu-24.04", workflow)
+        self.assertIn("dekk agents export-images", workflow)
+        self.assertIn('runs-on: [self-hosted, linux, x64, apxm-build, "run-${{ github.run_id }}"]', workflow)
+        self.assertEqual(workflow.count("      - name: Checkout exact event revision"), 1)
+        self.assertEqual(workflow.count("run: nix --option max-jobs 1 --option cores 1 develop --command dekk agents prepare-release-descriptors"), 1)
+        self.assertNotIn("needs: service-gate", workflow)
+        self.assertIn("CARGO_BUILD_JOBS: 1", workflow)
+        for artifact in ("apxm-release", "apxm-release-images", "apxm-release-descriptors"):
+            names = [line.strip() for line in workflow.splitlines() if line.strip().startswith("name: " + artifact + "-${{")]
+            self.assertEqual(len(names), 1)
+            self.assertTrue(names[0].endswith("-${{ github.run_id }}-${{ github.run_attempt }}"))
+        self.assertNotIn("nix develop", workflow)
+        self.assertNotIn("nix flake check", workflow)
+
     @classmethod
     def setUpClass(cls) -> None:
         with mock.patch.object(sys, "path", [str(SERVICE_IMAGES_PATH.parent), *sys.path]):
@@ -183,6 +274,53 @@ class ServiceImageContractTests(unittest.TestCase):
                 with self.assertRaisesRegex(self.images.ImageError, "dirty checkout"):
                     self.images.build_images(root, platform="linux/arm64", prefix="release", services=tuple(self.images.SERVICES))
                 build.assert_not_called()
+    def test_release_build_accepts_only_exact_qualified_descriptor_overlay(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self.candidate_fixture(root)
+            source_path = root / self.images.SOURCE_DESCRIPTOR_REL
+            source = json.loads(source_path.read_bytes())
+            source["source_revision"] = "a" * 40
+            source_path.write_bytes(self.images._canonical_json(source))
+
+            def run(command, **kwargs):
+                if "status" in command:
+                    return f" M {self.images.SOURCE_DESCRIPTOR_REL.as_posix()}\n"
+                if "rev-parse" in command:
+                    return "a" * 40 + "\n"
+                raise AssertionError(command)
+
+            with mock.patch.object(self.images, "_run", side_effect=run), mock.patch.object(
+                    self.images, "build_service_image", return_value={"qualified": True}) as build, \
+                    mock.patch.object(self.images.subprocess, "run", return_value=mock.Mock(returncode=0)):
+                result = self.images.build_images(
+                    root,
+                    platform="linux/amd64",
+                    prefix="release",
+                    services=("compilation-service",),
+                    qualified_descriptor_overlay=True,
+                )
+            self.assertEqual(result["source_revision"], "a" * 40)
+            build.assert_called_once()
+
+    def test_release_build_rejects_unrelated_dirty_file_with_descriptor_overlay(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self.candidate_fixture(root)
+            with mock.patch.object(
+                    self.images,
+                    "_run",
+                    return_value=" M driver.rs\n",
+                ), mock.patch.object(self.images, "build_service_image") as build:
+                with self.assertRaisesRegex(self.images.ImageError, "dirty checkout"):
+                    self.images.build_images(
+                        root,
+                        platform="linux/amd64",
+                        prefix="release",
+                        services=("compilation-service",),
+                        qualified_descriptor_overlay=True,
+                    )
+                build.assert_not_called()
 
     def test_candidate_verification_rejects_a_retagged_different_binary(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -235,7 +373,7 @@ class ServiceImageContractTests(unittest.TestCase):
         for service, text in self.dockerfiles.items():
             with self.subTest(service=service):
                 self.assertIn("COPY . /workspace", text)
-                self.assertIn("cargo build --release --locked", text)
+                self.assertIn("cargo build --release --locked --jobs 1", text)
                 self.assertNotIn(
                     "COPY target/release/",
                     text,

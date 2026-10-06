@@ -1138,11 +1138,10 @@ async fn drive_admitted_artifact(
         .map(|binding| binding.binding_digest.clone())
         .ok_or_else(|| "reference runtime model binding is absent".to_owned())?;
     let hook_bindings = apxm_program::air_hook_bindings(&air);
-    let initial_values = initial_model_request_values(&air);
     let request = ExecutionRequest {
         entrypoint_input: Some(apxm_execution::EntrypointInput::new(input)),
         model_admission: model_admission(&air, &model_binding_digest),
-        initial_values,
+        initial_values: BTreeMap::new(),
         air,
         hook_bindings,
         capability_invocations,
@@ -1364,26 +1363,6 @@ fn model_targets(air: &AirModule) -> Vec<String> {
         }
     }
     targets
-}
-
-fn initial_model_request_values(air: &AirModule) -> BTreeMap<String, Value> {
-    air.semantic_operations
-        .iter()
-        .filter(|operation| operation.op == SemanticOpKind::ModelCall)
-        .filter_map(|operation| {
-            let value_id = operation
-                .operands
-                .iter()
-                .find(|operand| operand.slot == "request")?
-                .value_id
-                .clone();
-            (!air
-                .value_assemblies
-                .iter()
-                .any(|assembly| assembly.value_id == value_id))
-            .then(|| (value_id.clone(), json!({"value_id": value_id})))
-        })
-        .collect()
 }
 
 fn local_capability_invocation_admissions(

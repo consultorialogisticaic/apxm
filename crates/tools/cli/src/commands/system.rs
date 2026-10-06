@@ -5,7 +5,6 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 use apxm_core::constants::env as apxm_env;
-use apxm_core::toolchain_env;
 use apxm_core::utils::build::MlirEnvReport;
 
 use super::dekk_hints;
@@ -15,11 +14,6 @@ use colored::Colorize;
 fn print_hint(message: &str) {
     use apxm_core::constants::ui;
     println!("  {} {}", ui::icons::INFO.cyan(), message);
-}
-
-fn print_subsection_header(title: &str) {
-    println!();
-    println!("  {}", title.bold());
 }
 
 fn print_warning_line(label: &str, value: &str) {
@@ -66,7 +60,6 @@ pub fn doctor_command(config: Option<PathBuf>, json_output: bool) -> Result<()> 
     }
 
     print_section_header("Environment");
-    print_minimal_mlir_status();
     if mlir_available {
         let detail = match &mlir_version {
             Some(v) => format!("ready (LLVM {v})"),
@@ -125,106 +118,5 @@ fn inspect_package_contract() -> serde_json::Value {
         }
         Some(_) => serde_json::json!({"status": "unrecognized", "path": "agent.toml"}),
         None => serde_json::json!({"status": "unreadable", "path": "agent.toml"}),
-    }
-}
-
-/// Auto-detect the conda prefix for the `apxm` environment.
-///
-/// Resolution order:
-/// 1. [`toolchain_env::CONDA_PREFIX`] env var
-/// 2. `conda info --envs --json` output (looks for an env named "apxm")
-/// 3. Common paths: ~/miniforge3/envs/apxm, ~/mambaforge/envs/apxm, ~/miniconda3/envs/apxm
-fn detect_conda_prefix() -> Option<PathBuf> {
-    // 1. Check conda-reported prefix
-    if let Ok(prefix) = env::var(toolchain_env::CONDA_PREFIX) {
-        let p = PathBuf::from(&prefix);
-        if p.is_dir() {
-            return Some(p);
-        }
-    }
-
-    // 2. Try `conda info --envs --json`
-    if let Ok(output) = std::process::Command::new("conda")
-        .args(["info", "--envs", "--json"])
-        .output()
-        && output.status.success()
-        && let Ok(text) = String::from_utf8(output.stdout)
-    {
-        // Minimal JSON parsing: look for paths ending in /apxm
-        for line in text.lines() {
-            let trimmed = line.trim().trim_matches('"').trim_end_matches(',');
-            let candidate = PathBuf::from(trimmed);
-            if candidate.file_name().is_some_and(|n| n == "apxm") && candidate.is_dir() {
-                return Some(candidate);
-            }
-        }
-    }
-
-    // 3. Check common paths
-    if let Some(home) = dirs::home_dir() {
-        let candidates = [
-            home.join("miniforge3/envs/apxm"),
-            home.join("mambaforge/envs/apxm"),
-            home.join("miniconda3/envs/apxm"),
-        ];
-        for candidate in &candidates {
-            if candidate.is_dir() {
-                return Some(candidate.clone());
-            }
-        }
-    }
-
-    None
-}
-
-fn print_minimal_mlir_status() {
-    let conda_prefix = detect_conda_prefix();
-    let conda_bin = conda_prefix.as_ref().map(|p| p.join("bin"));
-    let mlir_tblgen = conda_bin.as_ref().map(|p| p.join("mlir-tblgen"));
-    let mlir_cmake = conda_prefix.as_ref().map(|p| p.join("lib/cmake/mlir"));
-    let llvm_cmake = conda_prefix.as_ref().map(|p| p.join("lib/cmake/llvm"));
-
-    match conda_prefix.as_ref() {
-        Some(prefix) => {
-            print_status_line("Conda prefix", Status::Ok, &prefix.display().to_string());
-        }
-        None => {
-            print_status_line("Conda prefix", Status::Error, "<not set>");
-            print_hint(&format!(
-                "Run `{}`, then invoke commands through `{}`.",
-                dekk_hints::INSTALL_NO_INTERACTIVE,
-                dekk_hints::APXM_ENV_HINT
-            ));
-            return;
-        }
-    }
-
-    let checks: &[(&str, bool)] = &[
-        (
-            "mlir-tblgen",
-            mlir_tblgen.as_ref().is_some_and(|p| p.is_file()),
-        ),
-        (
-            "cmake/mlir",
-            mlir_cmake.as_ref().is_some_and(|p| p.is_dir()),
-        ),
-        (
-            "cmake/llvm",
-            llvm_cmake.as_ref().is_some_and(|p| p.is_dir()),
-        ),
-    ];
-
-    for &(label, found) in checks {
-        let status = if found { Status::Ok } else { Status::Error };
-        print_status_line(label, status, if found { "found" } else { "missing" });
-    }
-
-    if checks.iter().any(|(_, found)| !found) {
-        print_subsection_header("Suggested Fix");
-        println!("{}", dekk_hints::INSTALL_NO_INTERACTIVE);
-        println!("{}", dekk_hints::DOCTOR);
-        if let Some(ref prefix) = conda_prefix {
-            println!("# Runtime environment prefix: {}", prefix.display());
-        }
     }
 }

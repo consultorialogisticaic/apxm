@@ -103,10 +103,10 @@ impl Frontend {
             // refused by V8 on every host, not only where the kernel bounds
             // writable data.
             Self::Typescript => vec![
-                // `--experimental-permission` is supported across the Node
-                // versions used by the repository toolchain.
+                // Use the stable flag; newer Node releases removed the
+                // experimental alias while retaining the permission model.
                 "--no-warnings".to_string(),
-                "--experimental-permission".to_string(),
+                "--permission".to_string(),
                 format!("--allow-fs-read={}", frontend_root.display()),
                 format!("--max-old-space-size={NODE_HEAP_LIMIT_MB}"),
                 "--input-type=module".to_string(),
@@ -403,7 +403,7 @@ fn spawn_with_timeout(
             format!(
                 "the declared {} authoring frontend driver could not start: {}",
                 frontend.wire(),
-                error.kind()
+                error
             ),
         )
     })?;

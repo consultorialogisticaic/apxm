@@ -1,0 +1,117 @@
+name: apxm-ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    types: [opened, reopened, synchronize, ready_for_review]
+  workflow_dispatch:
+    inputs:
+      prepare_release_descriptors:
+        description: Build AMD64 artifacts and upload refreshed release descriptors
+        required: true
+        default: false
+        type: boolean
+      publish_release_images:
+        description: Legacy input; main always builds the credential-free OCI image handoff
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: apxm-ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    # A self-hosted runner must never execute code from an untrusted fork.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    # Build code runs only in the disposable private build boundary.
+    runs-on: [self-hosted, linux, x64, apxm-build, "run-${{ github.run_id }}"]
+    timeout-minutes: 240
+    env:
+      APXM_CAPTURE_CONFINEMENT: enforce
+      CARGO_BUILD_JOBS: 1
+      CARGO_INCREMENTAL: 0
+    steps:
+
+      - name: Checkout exact event revision
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Validate the locked Nix environment
+        run: nix --option max-jobs 1 --option cores 1 flake check --all-systems --no-update-lock-file
+
+      - name: Run the APXM service-owner gate
+        run: nix --option max-jobs 1 --option cores 1 develop --command dekk agents check-service
+
+      - name: Prepare the exact AMD64 release cohort
+        run: nix --option max-jobs 1 --option cores 1 develop --command dekk agents prepare-release-descriptors
+
+      - name: Package and qualify the immutable APXM cohort
+        run: nix --option max-jobs 1 --option cores 1 develop --command dekk agents package-release
+
+      - name: Verify the packaged APXM cohort as a consumer
+        run: nix --option max-jobs 1 --option cores 1 develop --command dekk agents verify-package
+
+      - name: Upload the immutable APXM cohort
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: apxm-release-${{ github.event.pull_request.head.sha || github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .apxm/release-artifacts
+          if-no-files-found: error
+          include-hidden-files: true
+          retention-days: 30
+
+      - name: Build the Linux AMD64 service image pair
+        if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+        run: >-
+          nix --option max-jobs 1 --option cores 1 develop --command dekk agents build-images
+          --platform linux/amd64
+          --repository-prefix ghcr.io/consultorialogisticaic/apxm
+          --qualified-descriptor-overlay
+
+      - name: Verify the built image pair from the consumer boundary
+        if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+        run: |
+          # shellcheck disable=SC2016
+          nix --option max-jobs 1 --option cores 1 develop --command bash -euo pipefail -c '
+            dekk agents verify-images \
+              --repository-prefix ghcr.io/consultorialogisticaic/apxm \
+              > image-evidence-verification.json
+            python -m json.tool image-evidence-verification.json >/dev/null
+          '
+
+      - name: Export the verified OCI image pair
+        if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+        run: >-
+          nix --option max-jobs 1 --option cores 1 develop --command dekk agents export-images
+          --repository-prefix ghcr.io/consultorialogisticaic/apxm
+
+      - name: Upload the immutable OCI handoff
+        if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: apxm-release-images-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .apxm/oci-handoff
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload refreshed release descriptors
+        if: github.event_name == 'workflow_dispatch' && inputs.prepare_release_descriptors
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: apxm-release-descriptors-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            deploy/services/source-revision.v1.json
+            contracts/descriptors/apxm.agents-owner-descriptor.v1.json
+            contracts/descriptors/apxm.agents-owner-descriptor.v1.sha256
+            contracts/services/manifests/apxm.agents-service-release-manifest.v1.json
+          if-no-files-found: error
+          retention-days: 7

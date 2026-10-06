@@ -48,7 +48,7 @@ RUN ln -sf /usr/local/lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm
 WORKDIR /workspace
 COPY . /workspace
 
-RUN cargo build --release --locked \
+RUN cargo build --release --locked --jobs 1 \
         -p apxm-compilation-service \
         -p apxm-runtime-service \
         -p apxm-frontend-python \

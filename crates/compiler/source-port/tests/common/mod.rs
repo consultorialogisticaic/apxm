@@ -41,12 +41,18 @@ pub fn roots() -> FrontendRoots {
 ///
 /// The port receives these paths as data and never searches `PATH`; test
 /// fixtures resolve the Dekk-managed toolchain once at their own boundary.
+/// A Nix development shell provides the same pinned drivers through `PATH`
+/// rather than materialising `.dekk/env`, so the shell exports are accepted
+/// as the local composition binding.
 pub fn drivers() -> FrontendDrivers {
     let root = repository_root();
-    FrontendDrivers::new(
-        root.join(".dekk/env/bin/python"),
-        root.join(".dekk/env/bin/node"),
-    )
+    let python = std::env::var_os("APXM_PYTHON_DRIVER")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| root.join(".dekk/env/bin/python"));
+    let node = std::env::var_os("APXM_TYPESCRIPT_DRIVER")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| root.join(".dekk/env/bin/node"));
+    FrontendDrivers::new(python, node)
 }
 
 /// Whether one authoring frontend can capture here. Each frontend's compiler
