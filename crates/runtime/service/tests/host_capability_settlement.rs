@@ -87,8 +87,9 @@ fn start_artifact_with_input(
     artifact: Vec<u8>,
     input: serde_json::Value,
 ) -> Parked {
-    let digest = service.admit_artifact(artifact.clone());
-    assert!(!digest.is_empty(), "the fixture artifact is admitted");
+    let digest = service
+        .try_admit_artifact(artifact.clone())
+        .expect("the fixture artifact is admitted");
     let created = service
         .handle(
             &handshake(),

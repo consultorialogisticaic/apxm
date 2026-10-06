@@ -27,6 +27,9 @@ class CargoCommand(StrEnum):
 class EnvKey(StrEnum):
     APXM_CARGO_TARGET_DIR = "APXM_CARGO_TARGET_DIR"
     CARGO_TARGET_DIR = "CARGO_TARGET_DIR"
+    CI = "CI"
+    CARGO_PROFILE_DEV_DEBUG = "CARGO_PROFILE_DEV_DEBUG"
+    CARGO_PROFILE_TEST_DEBUG = "CARGO_PROFILE_TEST_DEBUG"
 
 
 REPO_MARKER = "Cargo.toml"
@@ -146,6 +149,9 @@ def _prepend_env_path(env: dict[str, str], key: str, paths: list[Path]) -> None:
 def _cargo_env(project_root: Path, target_dir: Path, command: list[str]) -> dict[str, str]:
     env = dict(os.environ)
     env[EnvKey.CARGO_TARGET_DIR.value] = str(target_dir)
+    if env.get(EnvKey.CI.value) == "true":
+        env.setdefault(EnvKey.CARGO_PROFILE_DEV_DEBUG.value, "0")
+        env.setdefault(EnvKey.CARGO_PROFILE_TEST_DEBUG.value, "0")
     if platform.system().lower() == "darwin" and not _is_explicit_linux_target(
         _explicit_target(command)
     ):
