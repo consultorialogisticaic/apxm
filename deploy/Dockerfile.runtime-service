@@ -98,6 +98,7 @@ RUN apt-get update \
     && mkdir -p /workspace /run/apxm /var/lib/apxm/artifacts /var/lib/apxm/runtime-state
 
 COPY --from=release /workspace/target/release/apxm-runtime-service /workspace/target/release/apxm-runtime-service
+COPY --from=release /workspace/target/release/apxm-runtime-profile-ref /workspace/target/release/apxm-runtime-profile-ref
 COPY --from=release /workspace/contracts/schemas /workspace/contracts/schemas
 COPY --from=release /out/deploy/services/source-revision.v1.json /workspace/deploy/services/source-revision.v1.json
 COPY --from=release /out/contracts/descriptors /workspace/contracts/descriptors
