@@ -12,7 +12,6 @@ contract that makes such an image verifiable, and runs in the MLIR-free gate.
 from __future__ import annotations
 
 import importlib.util
-import hashlib
 import json
 import sys
 import tempfile
@@ -84,72 +83,22 @@ class ServiceImageContractTests(unittest.TestCase):
                 self.assertTrue(individual["qualified"])
                 self.assertEqual(individual["images"][0]["diagnostics"], [])
 
-    def test_export_binds_archive_to_verified_cohort_and_refuses_changes(self) -> None:
-        images = self.images
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            release = root / "release"
-            release.mkdir()
-            (release / "binary").write_bytes(b"executable")
-            (release / images.LOCAL_ARTIFACT_MANIFEST_REL).write_text("{}")
-            image = {"service": "runtime-service", "tag": "apxm/runtime:deadbeef",
-                     "image_id": "sha256:" + "1" * 64, "platform": "linux/amd64",
-                     "labels": {images.REVISION_LABEL: "a" * 40}}
-            evidence = {"qualified": True, "source_revision": "a" * 40, "images": [image]}
-
-            def execute(command, **_kwargs):
-                if command[1] == "copy":
-                    Path(command[-1].removeprefix("oci-archive:")).write_bytes(b"image archive")
-                    return ""
-                if "--config" in command:
-                    return json.dumps({"os": "linux", "architecture": "amd64",
-                                       "config": {"Labels": image["labels"]}})
-                return "sha256:" + "2" * 64
-
-            with mock.patch.object(images, "verify_images", return_value=evidence), \
-                    mock.patch.object(images, "verify_package", return_value={"qualified": True, "source_revision": "a" * 40}), \
-                    mock.patch.object(images, "_inspect", return_value={"Id": image["image_id"]}), \
-                    mock.patch.object(images, "_run", side_effect=execute):
-                result = images.export_images(root, prefix="apxm", output=root / ".apxm/handoff", run_id="123", run_attempt="2", release_files=release)
-                self.assertEqual(result["images"]["runtime-service"]["digest"], "sha256:" + "2" * 64)
-                self.assertEqual(result["images"]["runtime-service"]["sha256"],
-                                 hashlib.sha256(b"image archive").hexdigest())
-                self.assertEqual(json.loads((root / ".apxm/handoff/handoff.json").read_text()), result)
-                self.assertEqual(result["run_id"], 123)
-                self.assertEqual(result["run_attempt"], 2)
-                self.assertEqual(result["images"]["runtime-service"]["destination"], "apxm/runtime-service:apxm-" + "a" * 40)
-            with mock.patch.object(images, "verify_images", return_value=evidence), \
-                    mock.patch.object(images, "verify_package", return_value={"qualified": True, "source_revision": "a" * 40}), \
-                    mock.patch.object(images, "_inspect", return_value={"Id": "changed"}):
-                with self.assertRaisesRegex(images.ImageError, "changed before export"):
-                    images.export_images(root, prefix="apxm", output=root / ".apxm/raced", run_id="123", run_attempt="2", release_files=release)
-            with mock.patch.object(images, "verify_images", return_value=evidence), \
-                    mock.patch.object(images, "verify_package", return_value={"qualified": True, "source_revision": "b" * 40}):
-                with self.assertRaisesRegex(images.ImageError, "different revision"):
-                    images.export_images(root, prefix="apxm", output=root / ".apxm/wrong-package", run_id="123", run_attempt="2", release_files=release)
-            evidence["qualified"] = False
-            with mock.patch.object(images, "verify_images", return_value=evidence):
-                with self.assertRaisesRegex(images.ImageError, "unqualified"):
-                    images.export_images(root, prefix="apxm", output=root / ".apxm/refused", run_id="123", run_attempt="2", release_files=release)
-
-    def test_workflow_hands_off_images_without_registry_credentials(self) -> None:
+    def test_workflow_publishes_to_the_ci_registry_and_keeps_nothing_on_github(self) -> None:
         workflow = (REPOSITORY_ROOT / ".github/workflows/ci.yml").read_text()
-        self.assertNotIn("packages: write", workflow)
-        self.assertNotIn("secrets.GITHUB_TOKEN", workflow)
-        self.assertNotIn("docker push", workflow)
-        self.assertNotIn("ubuntu-24.04", workflow)
-        self.assertIn("dekk agents export-images", workflow)
-        self.assertIn('runs-on: [self-hosted, linux, x64, apxm-build, "run-${{ github.run_id }}"]', workflow)
+        for forbidden in ("packages: write", "secrets.", "docker push", "ubuntu-24.04", "self-hosted",
+                          "ghcr.io", "upload-artifact", "actions/cache", "gh release", "export-images"):
+            self.assertNotIn(forbidden, workflow)
+        self.assertIn("runs-on: [apxm]", workflow)
+        self.assertIn("id-token: write", workflow)
+        self.assertEqual(workflow.count(".github/scripts/zot-publish.sh publish apxm "), 1)
         self.assertEqual(workflow.count("      - name: Checkout exact event revision"), 1)
         self.assertEqual(workflow.count("run: nix --option max-jobs 1 --option cores 1 develop --command dekk agents prepare-release-descriptors"), 1)
         self.assertNotIn("needs: service-gate", workflow)
         self.assertIn("CARGO_BUILD_JOBS: 1", workflow)
-        for artifact in ("apxm-release", "apxm-release-images", "apxm-release-descriptors"):
-            names = [line.strip() for line in workflow.splitlines() if line.strip().startswith("name: " + artifact + "-${{")]
-            self.assertEqual(len(names), 1)
-            self.assertTrue(names[0].endswith("-${{ github.run_id }}-${{ github.run_attempt }}"))
         self.assertNotIn("nix develop", workflow)
         self.assertNotIn("nix flake check", workflow)
+        for service in self.images.SERVICES:
+            self.assertIn(service, workflow)
 
     @classmethod
     def setUpClass(cls) -> None:
