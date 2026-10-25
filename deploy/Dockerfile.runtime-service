@@ -93,8 +93,8 @@ LABEL org.opencontainers.image.title="APXM Runtime Service" \
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates libstdc++6 \
     && rm -rf /var/lib/apt/lists/* \
-    && groupadd --system --gid 65532 apxm \
-    && useradd --system --uid 65532 --gid 65532 --home-dir /nonexistent --shell /usr/sbin/nologin apxm \
+    && groupadd --system --gid 10001 apxm \
+    && useradd --system --uid 10001 --gid 10001 --home-dir /nonexistent --shell /usr/sbin/nologin apxm \
     && mkdir -p /workspace /run/apxm /var/lib/apxm/artifacts /var/lib/apxm/runtime-state
 
 COPY --from=release /workspace/target/release/apxm-runtime-service /workspace/target/release/apxm-runtime-service
@@ -128,11 +128,11 @@ RUN set -eu; \
     [ "$manifest_digest" = "$APXM_RUNTIME_SERVICE_DIGEST" ]; \
     [ "sha256:$(sha256sum /workspace/target/release/apxm-runtime-service | cut -d' ' -f1)" = "$APXM_RUNTIME_SERVICE_DIGEST" ]
 
-RUN chown -R 65532:65532 /workspace /run/apxm /var/lib/apxm
+RUN chown -R 10001:10001 /workspace /run/apxm /var/lib/apxm
 
 ENV APXM_ARTIFACT_DIR=/var/lib/apxm/artifacts \
     APXM_RUNTIME_STATE_DIR=/var/lib/apxm/runtime-state
-USER 65532:65532
+USER 10001:10001
 VOLUME ["/run/apxm", "/var/lib/apxm/artifacts", "/var/lib/apxm/runtime-state"]
 WORKDIR /workspace
 ENTRYPOINT ["/workspace/target/release/apxm-runtime-service"]

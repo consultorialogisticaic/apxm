@@ -27,3 +27,22 @@
 # The frontend bridge is copied into the Python package by an install step; the
 # image builds its own Linux bridge and must not inherit a host one.
 /crates/compiler/frontend/python/apxm_program/_native.so
+
+# Credentials never enter a build context, whatever a checkout or a developer
+# machine happens to hold next to the sources.
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+id_rsa*
+id_ed25519*
+.netrc
+.npmrc
+.pypirc
+.aws/
+.ssh/
+.docker/
+.git-credentials
