@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Vendored from consultorialogisticaic/hostplane tools/ci/publish.sh at commit 5efa450a18523d3b7eb3c7b41c1edf49da966c31 (PR #24 head).
+# Update by copying a reviewed hostplane commit, never by editing here.
 # Publish one CI artifact of a workload and attest it, as the promoter expects.
 #
 # Run from the consumer's CI job on the workload's publishing pool, for a push event:

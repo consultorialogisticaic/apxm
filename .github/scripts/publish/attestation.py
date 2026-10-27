@@ -1,4 +1,6 @@
 #!/usr/bin/env -S python3 -I
+# Vendored from consultorialogisticaic/hostplane tools/ci/attestation.py at commit 5efa450a18523d3b7eb3c7b41c1edf49da966c31 (PR #24 head).
+# Update by copying a reviewed hostplane commit, never by editing here.
 """Verify a CI attestation token (a GitHub Actions OIDC JWT) with the standard library only.
 
 publish.sh runs it on the token it was just issued, before attaching it to the

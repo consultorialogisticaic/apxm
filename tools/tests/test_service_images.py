@@ -141,10 +141,9 @@ class ServiceImageContractTests(unittest.TestCase):
         self.assertIn('CONTAINERFILE="deploy/Dockerfile.$service"', image)
 
     def test_the_vendored_helper_is_the_platform_copy(self) -> None:
-        source = (REPOSITORY_ROOT / ".github/scripts/publish/SOURCE").read_text()
-        self.assertRegex(source, r"commit: [0-9a-f]{40}")
         for name in ("publish.sh", "attestation.py"):
-            self.assertTrue((REPOSITORY_ROOT / ".github/scripts/publish" / name).is_file())
+            head = (REPOSITORY_ROOT / ".github/scripts/publish" / name).read_text().splitlines()[:3]
+            self.assertRegex(head[1], rf"^# Vendored from \S+ tools/ci/{name} at commit [0-9a-f]{{40}}")
 
     def test_images_run_as_the_platform_user(self) -> None:
         for service, text in self.dockerfiles.items():
