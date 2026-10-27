@@ -83,6 +83,40 @@ class ServiceImageContractTests(unittest.TestCase):
                 self.assertTrue(individual["qualified"])
                 self.assertEqual(individual["images"][0]["diagnostics"], [])
 
+    def test_publish_arguments_reproduce_the_two_phase_build(self) -> None:
+        revision = "a" * 40
+        manifest, service, native = ("sha256:" + c * 64 for c in "123")
+        descriptors = {
+            "source_revision": revision,
+            "release_manifest_digest": manifest,
+            "frontend_native": {"digest": native},
+            "services": [{"name": "compilation-service", "digest": service}],
+        }
+        with mock.patch.object(self.images, "declared_revision", return_value=revision), \
+                mock.patch.object(self.images, "_run", return_value=json.dumps(descriptors)) as run:
+            arguments = self.images.publish_build_arguments(
+                Path("/owner"), "compilation-service", platform="linux/amd64", prefix="apxm"
+            )
+        self.assertIn("apxm/compilation-service-release:aaaaaaaa", run.call_args.args[0])
+        pairs = [arguments[i + 1] for i, a in enumerate(arguments) if a == "--build-arg"]
+        self.assertEqual(
+            pairs,
+            [
+                f"APXM_SOURCE_REVISION={revision}",
+                f"APXM_RELEASE_MANIFEST_DIGEST={manifest}",
+                f"APXM_COMPILATION_SERVICE_DIGEST={service}",
+                f"APXM_PYTHON_FRONTEND_NATIVE_DIGEST={native}",
+            ],
+        )
+        self.assertEqual(arguments[:2], ["--platform", "linux/amd64"])
+        descriptors["source_revision"] = "b" * 40
+        with mock.patch.object(self.images, "declared_revision", return_value=revision), \
+                mock.patch.object(self.images, "_run", return_value=json.dumps(descriptors)):
+            with self.assertRaises(self.images.ImageError):
+                self.images.publish_build_arguments(
+                    Path("/owner"), "compilation-service", platform="linux/amd64", prefix="apxm"
+                )
+
     def test_workflow_publishes_to_the_ci_registry_and_keeps_nothing_on_github(self) -> None:
         workflow = (REPOSITORY_ROOT / ".github/workflows/ci.yml").read_text()
         for forbidden in ("packages: write", "secrets.", "docker push", "ubuntu-24.04", "self-hosted",

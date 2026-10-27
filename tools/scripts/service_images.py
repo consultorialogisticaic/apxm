@@ -245,6 +245,47 @@ def build_service_image(
     }
 
 
+def publish_build_arguments(root: Path, service: str, *, platform: str, prefix: str) -> list[str]:
+    """The `docker build` arguments that rebuild a service image exactly as `build_service_image` did.
+
+    The image is stamped in two phases: the release stage regenerates the cohort descriptors,
+    and the final stage takes their digests as build arguments. A publisher that runs one
+    `docker build` of the final stage (the platform's publish helper) needs those arguments
+    up front, so they are read from the release-stage image `build` left in the local daemon.
+    The layers are cached, so the publisher's build reproduces the verified image.
+    """
+
+    spec = SERVICES[service]
+    revision = declared_revision(root)
+    release_tag = f"{prefix}/{service}-release:{revision[:8]}"
+    descriptors = json.loads(
+        _run(
+            ["docker", "run", "--rm", "--platform", platform, release_tag,
+             "cat", "/out/apxm-image-release.v1.json"],
+            capture=True,
+        )
+    )
+    if descriptors.get("source_revision") != revision:
+        raise ImageError(
+            f"the {service} release stage holds {descriptors.get('source_revision')}, not {revision}"
+        )
+    service_digest = next(
+        item["digest"] for item in descriptors["services"] if item["name"] == service
+    )
+    arguments = [
+        "--platform", platform,
+        "--build-arg", f"APXM_SOURCE_REVISION={revision}",
+        "--build-arg", f"APXM_RELEASE_MANIFEST_DIGEST={descriptors['release_manifest_digest']}",
+        "--build-arg", f"{spec['digest_arg']}={service_digest}",
+    ]
+    if service == "compilation-service":
+        arguments += [
+            "--build-arg",
+            f"APXM_PYTHON_FRONTEND_NATIVE_DIGEST={descriptors['frontend_native']['digest']}",
+        ]
+    return arguments
+
+
 def build_images(
     root: Path,
     *,
@@ -656,6 +697,14 @@ def main(argv: list[str] | None = None) -> int:
         help="allow only run-qualified descriptor files to differ from exact HEAD",
     )
 
+    publish_parser = subparsers.add_parser(
+        "publish-arguments",
+        help="print, one per line, the docker build arguments that reproduce a built service image",
+    )
+    publish_parser.add_argument("--platform", default=DEFAULT_PLATFORM)
+    publish_parser.add_argument("--repository-prefix", default=DEFAULT_REPOSITORY_PREFIX)
+    publish_parser.add_argument("--service", choices=tuple(SERVICES), required=True)
+
     verify_parser = subparsers.add_parser("verify", help="verify both service images as a consumer")
     verify_parser.add_argument("--repository-prefix", default=DEFAULT_REPOSITORY_PREFIX)
     verify_parser.add_argument("--service", choices=tuple(SERVICES), action="append")
@@ -668,6 +717,16 @@ def main(argv: list[str] | None = None) -> int:
     services = tuple(getattr(args, "service", None) or SERVICES)
     root = args.root.resolve()
     started = time.monotonic()
+    if args.mode == "publish-arguments":
+        try:
+            lines = publish_build_arguments(
+                root, args.service, platform=args.platform, prefix=args.repository_prefix
+            )
+        except (ImageError, OSError, KeyError, ValueError, json.JSONDecodeError) as exc:
+            print(f"service images publish-arguments failed: {exc}", file=sys.stderr)
+            return 1
+        print("\n".join(lines))
+        return 0
     try:
         if args.mode == "build":
             builder = build_candidate_images if args.candidate else build_images
