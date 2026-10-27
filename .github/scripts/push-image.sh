@@ -6,11 +6,9 @@
 # The image lands at <registry>/ci/apxm/ARTIFACT:<commit sha>. The registry host and the
 # push credential are the ones the runner already carries in its Docker configuration.
 #
-# These images are consumed by digest only: a deployment that runs one records the
-# digest this script prints in its own reviewed configuration, and a digest names its
-# bytes whoever pushed the tag. No proof of origin is attached and none is needed, and
-# this repository declares no deployment of its own. The tag is immutable: the script
-# fails when it already exists instead of reusing it.
+# The proof of origin is attached separately by attest-image.sh, which holds the
+# identity-token permission this script does not need. The tag is immutable: the script fails when it already
+# exists instead of reusing it.
 set -euo pipefail
 
 die() {

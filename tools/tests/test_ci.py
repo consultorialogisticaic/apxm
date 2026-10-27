@@ -1,0 +1,132 @@
+"""Pin the `ci` command and the policy of the CI workflow.
+
+The workflow is the contract with the VPS platform: it must run only on a push to main,
+never cancel a run, store nothing on GitHub, and hold the OIDC permission only where it
+is used. These checks read the files, so they run in the MLIR-free gate.
+"""
+
+from __future__ import annotations
+
+import importlib.util
+import re
+import sys
+import tomllib
+import unittest
+from pathlib import Path
+
+REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
+CI_PATH = REPOSITORY_ROOT / "tools" / "scripts" / "ci.py"
+WORKFLOW = REPOSITORY_ROOT / ".github" / "workflows" / "ci.yml"
+ATTEST = REPOSITORY_ROOT / ".github" / "scripts" / "attest-image.sh"
+DEKK_MANIFEST_PATH = REPOSITORY_ROOT / ".dekk.toml"
+
+
+def load_ci():
+    sys.path.insert(0, str(CI_PATH.parent))
+    try:
+        spec = importlib.util.spec_from_file_location("apxm_ci", CI_PATH)
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = module
+        spec.loader.exec_module(module)
+        return module
+    finally:
+        sys.path.pop(0)
+
+
+class CiCommandTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.ci = load_ci()
+        with DEKK_MANIFEST_PATH.open("rb") as handle:
+            cls.commands = tomllib.load(handle)["commands"]
+
+    def test_every_step_is_a_declared_dekk_command(self) -> None:
+        for name in self.ci.CI_COMMANDS:
+            self.assertIn(name, self.commands)
+
+    def test_ci_is_declared_and_runs_the_script(self) -> None:
+        self.assertEqual(self.commands["ci"]["run"], "python tools/scripts/ci.py")
+        self.assertIn("test-ci", self.commands)
+
+    def test_the_gate_that_needs_no_toolchain_runs_first_and_the_cohort_last(self) -> None:
+        steps = self.ci.CI_COMMANDS
+        self.assertEqual(steps[0], "check-service")
+        self.assertLess(steps.index("prepare-release-descriptors"), steps.index("package-release"))
+        self.assertLess(steps.index("package-release"), steps.index("verify-package"))
+        self.assertIn("test-compiler", steps)
+        self.assertIn("build", steps)
+
+    def test_steps_resolve_to_the_declared_run_strings(self) -> None:
+        resolved = dict(self.ci.resolve_steps({n: v["run"] for n, v in self.commands.items() if "run" in v}))
+        for name in self.ci.CI_COMMANDS:
+            self.assertEqual(resolved[name], self.commands[name]["run"])
+
+    def test_skip_rejects_a_step_the_command_does_not_run(self) -> None:
+        commands = {n: v["run"] for n, v in self.commands.items() if "run" in v}
+        self.assertEqual(len(self.ci.resolve_steps(commands, skip=("build",))), len(self.ci.CI_COMMANDS) - 1)
+        with self.assertRaises(KeyError):
+            self.ci.resolve_steps(commands, skip=("fmt-check",))
+
+
+class WorkflowPolicyTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.text = WORKFLOW.read_text(encoding="utf-8")
+        cls.code = "\n".join(
+            line for line in cls.text.splitlines() if not line.lstrip().startswith("#")
+        )
+
+    def test_no_github_storage_and_no_github_hosted_runner(self) -> None:
+        for forbidden in (
+            "upload-artifact",
+            "download-artifact",
+            "actions/cache",
+            "ghcr.io",
+            "ubuntu-latest",
+            "gh release",
+            "action-gh-release",
+        ):
+            self.assertNotIn(forbidden, self.code, forbidden)
+
+    def test_no_setup_action_cache_input(self) -> None:
+        self.assertNotRegex(self.code, r"(?m)^\s*cache:")
+
+    def test_runs_only_on_push_to_main_and_manual_dispatch(self) -> None:
+        self.assertNotIn("pull_request", self.code)
+        self.assertRegex(self.code, r"push:\n\s+branches: \[main\]")
+        self.assertIn("paths-ignore:", self.code)
+
+    def test_concurrency_group_never_cancels(self) -> None:
+        self.assertIn("cancel-in-progress: false", self.code)
+        self.assertNotIn("cancel-in-progress: true", self.code)
+
+    def test_the_workflow_calls_the_one_local_entry_point(self) -> None:
+        self.assertIn("dekk agents ci", self.code)
+
+    def test_id_token_is_granted_per_job_and_never_at_the_top_level(self) -> None:
+        top = self.code.split("jobs:")[0]
+        self.assertNotIn("id-token", top)
+        self.assertEqual(len(re.findall(r"id-token: write", self.code)), 2)
+
+    def test_only_the_publishing_job_publishes_and_only_from_main(self) -> None:
+        check, image = self.code.split("  image:")
+        self.assertNotIn("push-image", check)
+        self.assertNotIn("attest-image", check)
+        self.assertIn("github.event_name == 'push' && github.ref == 'refs/heads/main'", image)
+        self.assertIn("runs-on: [apxm]", image)
+        self.assertIn("runs-on: [pool-shared]", check)
+
+    def test_actions_are_pinned_to_a_commit(self) -> None:
+        for use in re.findall(r"uses: (\S+)", self.code):
+            self.assertRegex(use, r"@[0-9a-f]{40}$")
+
+    def test_attestation_script_is_main_push_only_and_pins_oras(self) -> None:
+        script = ATTEST.read_text(encoding="utf-8")
+        self.assertIn("refs/heads/main", script)
+        self.assertIn("application/vnd.hostplane.ci-oidc.v1+jwt", script)
+        self.assertRegex(script, r"ORAS_SHA256_AMD64=[0-9a-f]{64}")
+        self.assertIn("::add-mask::", script)
+
+
+if __name__ == "__main__":
+    unittest.main()

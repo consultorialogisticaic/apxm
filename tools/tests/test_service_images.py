@@ -87,30 +87,26 @@ class ServiceImageContractTests(unittest.TestCase):
         workflow = (REPOSITORY_ROOT / ".github/workflows/ci.yml").read_text()
         for forbidden in ("packages: write", "secrets.", "docker push", "ubuntu-24.04", "self-hosted",
                           "ghcr.io", "upload-artifact", "actions/cache", "gh release", "export-images",
-                          "id-token", "oras", "zot-publish"):
+                          "zot-publish"):
             self.assertNotIn(forbidden, workflow)
         check, image = workflow.split("\n  # Builds the service images")
-        self.assertIn("runs-on: [apxm-check]", check)
+        self.assertIn("runs-on: [pool-shared]", check)
         self.assertIn("runs-on: [apxm]", image)
-        self.assertNotIn("runs-on: [apxm]\n", check)
         self.assertIn("needs: check", image)
-        self.assertIn("if: github.event_name == 'push'", image)
-        # Pull request code runs only in the check job: no build, push or credential there.
-        for step in ("build-images", "verify-images", "push-image.sh"):
+        self.assertIn("if: github.event_name == 'push' && github.ref == 'refs/heads/main'", image)
+        # The check job builds and pushes no image and attests nothing: no registry credential.
+        for step in ("build-images", "verify-images", "push-image.sh", "attest-image.sh"):
             self.assertNotIn(step, check)
             self.assertIn(step, image)
         self.assertEqual(image.count(".github/scripts/push-image.sh "), 1)
+        self.assertEqual(image.count(".github/scripts/attest-image.sh "), 1)
         self.assertEqual(workflow.count("      - name: Checkout exact event revision"), 2)
-        self.assertEqual(workflow.count("run: nix --option max-jobs 1 --option cores 1 develop --command dekk agents prepare-release-descriptors"), 2)
-        self.assertIn("Show the refreshed release descriptors", check)
+        self.assertIn("run: nix --option max-jobs 1 --option cores 1 develop --command dekk agents prepare-release-descriptors", image)
         self.assertNotIn("needs: service-gate", workflow)
-        self.assertIn("CARGO_BUILD_JOBS: 1", workflow)
-        self.assertNotIn("nix develop", workflow)
-        self.assertNotIn("nix flake check", workflow)
         for service in self.images.SERVICES:
             self.assertIn(service, workflow)
 
-    def test_push_script_is_digest_only_and_immutable(self) -> None:
+    def test_push_script_is_immutable_and_holds_no_identity_token(self) -> None:
         script = (REPOSITORY_ROOT / ".github/scripts/push-image.sh").read_text()
         self.assertIn("ci/apxm/$artifact:$GITHUB_SHA", script)
         self.assertIn("docker manifest inspect", script)

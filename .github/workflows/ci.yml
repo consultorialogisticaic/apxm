@@ -1,95 +1,82 @@
 name: apxm-ci
 
+# Runs only on a push to main, on the platform's VPS runners. Nothing is stored on
+# GitHub: no artifact upload, no Actions cache, no GHCR, no Release. Pull requests are
+# checked locally with `dekk agents ci`, the same command this workflow runs.
 on:
   push:
     branches: [main]
-  pull_request:
-    types: [opened, reopened, synchronize, ready_for_review]
+    paths-ignore:
+      - "docs/**"
+      - "**/*.md"
+      - "LICENSE"
   workflow_dispatch:
-    inputs:
-      show_release_descriptors:
-        description: Print the refreshed release descriptors as a patch in the job log
-        required: true
-        default: false
-        type: boolean
 
 permissions:
   contents: read
 
-# A run that publishes must finish: a cancelled push would leave a commit that was
-# only partly pushed. Only pull request runs are superseded.
+# One run at a time per branch, and never cancelled: a cancelled run could leave a
+# commit only partly published.
 concurrency:
-  group: apxm-ci-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: apxm-ci-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
-  # Runner labels are the platform's scale-set labels. `apxm-check` is a pool without
-  # the registry credential (a platform-provided label, to be created before this
-  # workflow can run); `apxm` is the pool that holds it and runs only the image job.
+  # `pool-shared` is the shared pool label (an unprivileged ~2 GiB Incus container with
+  # no registry credential). `id-token: write` is there only so the platform can commit
+  # the build caches on the default branch; this job never publishes.
   check:
-    # A runner must never execute code from an untrusted fork.
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-    # Pull request code runs here, on an ephemeral one-job runner with neither a
-    # registry credential nor an OIDC token.
-    runs-on: [apxm-check]
+    runs-on: [pool-shared]
     timeout-minutes: 240
     permissions:
       contents: read
+      id-token: write
     env:
       APXM_CAPTURE_CONFINEMENT: enforce
-      CARGO_BUILD_JOBS: 1
+      # The pool's persistent caches (see the measurements in the pull request).
+      UV_CACHE_DIR: /var/cache/ci/uv
+      npm_config_cache: /var/cache/ci/npm
+      CARGO_HOME: /var/cache/ci/cargo
+      SCCACHE_DIR: /var/cache/ci/sccache
+      # Peak memory of the MLIR steps, measured against a 2 GiB limit: one cargo job,
+      # and one test thread so the source-port suite does not start 30 frontends at once.
+      CARGO_BUILD_JOBS: 2
       CARGO_INCREMENTAL: 0
+      RUST_TEST_THREADS: 1
     steps:
-
       - name: Checkout exact event revision
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          ref: ${{ github.sha }}
           persist-credentials: false
           fetch-depth: 0
 
       - name: Validate the locked Nix environment
         run: nix --option max-jobs 1 --option cores 1 flake check --all-systems --no-update-lock-file
 
-      - name: Run the APXM service-owner gate
-        run: nix --option max-jobs 1 --option cores 1 develop --command dekk agents check-service
+      # The one entry point: the same command a developer runs locally.
+      - name: Run the full CI check
+        env:
+          APXM_COMMIT_LINT_RANGE: ${{ github.event.before && format('{0}..{1}', github.event.before, github.sha) || '' }}
+        run: nix --option max-jobs 1 --option cores 1 develop --command dekk agents ci
 
-      - name: Prepare the exact AMD64 release cohort
-        run: nix --option max-jobs 1 --option cores 1 develop --command dekk agents prepare-release-descriptors
-
-      # Replaces the descriptor artifact of the former workflow, which kept the refreshed
-      # files on GitHub. The files are small and the patch applies with `git apply`.
-      - name: Show the refreshed release descriptors
-        if: github.event_name == 'workflow_dispatch' && inputs.show_release_descriptors
-        run: >-
-          git diff --patch --
-          deploy/services/source-revision.v1.json
-          contracts/descriptors/apxm.agents-owner-descriptor.v1.json
-          contracts/descriptors/apxm.agents-owner-descriptor.v1.sha256
-          contracts/services/manifests/apxm.agents-service-release-manifest.v1.json
-
-      - name: Package and qualify the immutable APXM cohort
-        run: nix --option max-jobs 1 --option cores 1 develop --command dekk agents package-release
-
-      - name: Verify the packaged APXM cohort as a consumer
-        run: nix --option max-jobs 1 --option cores 1 develop --command dekk agents verify-package
-
-  # Builds the service images from the commit that main received and pushes them to the
-  # platform registry. The images are consumed by digest only (see push-image.sh), so no
-  # proof of origin is attached and the job needs no OIDC token.
+  # Builds the service images and publishes them to the platform registry (zot) as
+  # ci/apxm/<service>:<sha>, then attaches the OIDC proof of origin. Pool runners have no
+  # route to the registry, so this runs on the publishing label, `apxm`.
   image:
-    if: github.event_name == 'push'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: check
     runs-on: [apxm]
     timeout-minutes: 240
     permissions:
       contents: read
+      id-token: write
     env:
       APXM_CAPTURE_CONFINEMENT: enforce
-      CARGO_BUILD_JOBS: 1
+      AUDIENCE_PREFIX: ${{ vars.CI_AUDIENCE_PREFIX }}
+      CARGO_BUILD_JOBS: 2
       CARGO_INCREMENTAL: 0
     steps:
-
       - name: Checkout exact event revision
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
@@ -115,8 +102,10 @@ jobs:
             python -m json.tool image-evidence-verification.json >/dev/null
           '
 
-      - name: Push the verified images
+      - name: Push the verified images and attach the proof of origin
         run: |
           for service in compilation-service runtime-service; do
-            echo "$service $(.github/scripts/push-image.sh "$service" "apxm/$service:${GITHUB_SHA::8}")"
+            digest=$(.github/scripts/push-image.sh "$service" "apxm/$service:${GITHUB_SHA::8}")
+            .github/scripts/attest-image.sh "$service" "$digest"
+            echo "$service $digest"
           done
