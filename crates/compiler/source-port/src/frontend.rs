@@ -827,6 +827,21 @@ mod tests {
         assert!(diagnostic.message.contains("capture timeout"));
     }
 
+    /// Resolves a coreutils binary to an absolute path using the test
+    /// process's PATH, then the standard system directories.
+    #[cfg(unix)]
+    fn resolve_tool(name: &str) -> String {
+        let path_var = std::env::var_os("PATH").unwrap_or_default();
+        let mut dirs: Vec<std::path::PathBuf> = std::env::split_paths(&path_var).collect();
+        dirs.extend(["/bin", "/usr/bin"].map(std::path::PathBuf::from));
+        dirs.into_iter()
+            .map(|dir| dir.join(name))
+            .find(|candidate| candidate.is_absolute() && candidate.is_file())
+            .unwrap_or_else(|| panic!("`{name}` not found on PATH or in /bin, /usr/bin"))
+            .to_string_lossy()
+            .into_owned()
+    }
+
     /// The port's own pipe mechanics, driven the same way and for the same
     /// reason as the deadline test above.
     #[cfg(unix)]
@@ -835,9 +850,15 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
 
         let path = unique_test_path("large-output-driver");
+        // The capture runs after `env_clear()`, so the script cannot rely on
+        // PATH: embed absolute tool paths resolved here.
+        let cat = resolve_tool("cat");
+        let dd = resolve_tool("dd");
         fs::write(
             &path,
-            "#!/bin/sh\ncat >/dev/null\ndd if=/dev/zero bs=131072 count=1 2>/dev/null\ndd if=/dev/zero bs=131072 count=1 1>&2 2>/dev/null\n",
+            format!(
+                "#!/bin/sh\n'{cat}' >/dev/null\n'{dd}' if=/dev/zero bs=131072 count=1 2>/dev/null\n'{dd}' if=/dev/zero bs=131072 count=1 1>&2 2>/dev/null\n"
+            ),
         )
         .expect("write large-output driver");
         fs::set_permissions(&path, fs::Permissions::from_mode(0o755))

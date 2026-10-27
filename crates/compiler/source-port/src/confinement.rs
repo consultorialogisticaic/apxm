@@ -668,7 +668,7 @@ mod platform {
     /// answer; this list closes the channels a ruleset does not describe.
     #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
     fn denied_calls() -> Vec<libc::c_long> {
-        let mut denied = vec![
+        let denied = vec![
             libc::SYS_ptrace,
             libc::SYS_process_vm_readv,
             libc::SYS_process_vm_writev,
@@ -688,8 +688,13 @@ mod platform {
             libc::SYS_request_key,
             libc::SYS_open_by_handle_at,
         ];
+        // aarch64 has no `fork`/`vfork` syscalls; only x86_64 adds them.
         #[cfg(target_arch = "x86_64")]
-        denied.extend_from_slice(&[libc::SYS_fork, libc::SYS_vfork]);
+        let denied = {
+            let mut denied = denied;
+            denied.extend_from_slice(&[libc::SYS_fork, libc::SYS_vfork]);
+            denied
+        };
         denied
     }
 
