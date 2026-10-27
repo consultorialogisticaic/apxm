@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Vendored from consultorialogisticaic/hostplane tools/ci/publish.sh at commit 5efa450a18523d3b7eb3c7b41c1edf49da966c31 (PR #24 head).
+# Vendored from consultorialogisticaic/hostplane tools/ci/publish.sh at commit d63134c0023b876612aaafffdfac50acc4dee69f (main, PR #24 merged).
 # Update by copying a reviewed hostplane commit, never by editing here.
 # Publish one CI artifact of a workload and attest it, as the promoter expects.
 #
@@ -38,7 +38,8 @@
 #
 # Inputs (environment):
 #   REGISTRY            registry host[:port] (default: HOSTPLANE_PUBLISH_REGISTRY)
-#   HOSTPLANE_PUBLISH_URL, HOSTPLANE_PUBLISH_AUDIENCE, HOSTPLANE_PUBLISH_CA
+#   HOSTPLANE_PUBLISH_URL, HOSTPLANE_PUBLISH_AUDIENCE, HOSTPLANE_PUBLISH_CA,
+#   HOSTPLANE_PUBLISH_REGISTRY_CA
 #                       the token exchange, from PUBLISH_ENV_FILE (default
 #                       /etc/hostplane/publish/env) unless set here
 #   WORKLOAD, ARTIFACT  names in the image path
@@ -79,7 +80,7 @@ load_publish_env() {
   [[ -r "${file}" ]] || return 0
   while IFS='=' read -r key value; do
     case "${key}" in
-      HOSTPLANE_PUBLISH_URL | HOSTPLANE_PUBLISH_AUDIENCE | HOSTPLANE_PUBLISH_CA | HOSTPLANE_PUBLISH_REGISTRY)
+      HOSTPLANE_PUBLISH_URL | HOSTPLANE_PUBLISH_AUDIENCE | HOSTPLANE_PUBLISH_CA | HOSTPLANE_PUBLISH_REGISTRY | HOSTPLANE_PUBLISH_REGISTRY_CA)
         [[ -n "${!key:-}" ]] || printf -v "${key}" '%s' "${value}" ;;
     esac
   done <"${file}"
@@ -135,6 +136,10 @@ trap 'rm -rf "${SCRATCH}"' EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
+# Curl's retry policy for the platform's own endpoints: transient failures (timeouts,
+# connection refused, 408, 429, 5xx) are retried with a pause, honouring Retry-After.
+readonly CURL_RETRY=(--retry 5 --retry-delay 2 --retry-connrefused --retry-max-time 90)
+
 # oras comes from its release tarball, accepted only at the pinned sha256.
 install_oras() {
   local tarball="${ORAS_TARBALL:-}" arch
@@ -145,7 +150,7 @@ install_oras() {
       *) fail "no oras build for $(uname -m)" ;;
     esac
     tarball="${SCRATCH}/oras.tar.gz"
-    curl -sSfL --proto '=https' --tlsv1.2 -o "${tarball}" \
+    curl -sSfL "${CURL_RETRY[@]}" --proto '=https' --tlsv1.2 -o "${tarball}" \
       "https://github.com/oras-project/oras/releases/download/v${ORAS_VERSION}/oras_${ORAS_VERSION}_linux_${arch}.tar.gz"
   fi
   [[ -f "${tarball}" ]] || fail "oras tarball not found: ${tarball}"
@@ -156,6 +161,20 @@ install_oras() {
   tar -xzf "${tarball}" -C "${SCRATCH}/bin" oras
   ORAS="${SCRATCH}/bin/oras"
   [[ -x "${ORAS}" ]] || fail "the oras tarball holds no executable oras"
+}
+
+# oras does not read certs.d, and its --ca-file replaces the system roots. It talks to
+# the registry and to the exchange the registry's token challenge names, which have
+# different CAs, so it gets a bundle of both, in the scratch directory. Nothing is
+# added to the system roots. Without the exchange the system roots are used.
+ORAS_TLS=()
+oras_trust() {
+  [[ -n "${PUBLISH_URL}" ]] || return 0
+  local registry_ca="${HOSTPLANE_PUBLISH_REGISTRY_CA:-}" bundle="${SCRATCH}/oras-ca.pem"
+  [[ -r "${HOSTPLANE_PUBLISH_CA:-}" ]] || fail "the exchange CA is not readable: ${HOSTPLANE_PUBLISH_CA:-unset}"
+  [[ -r "${registry_ca}" ]] || fail "the registry CA is not readable: ${registry_ca:-unset}"
+  cat "${HOSTPLANE_PUBLISH_CA}" "${registry_ca}" >"${bundle}"
+  ORAS_TLS=(--ca-file "${bundle}")
 }
 
 is_digest() {
@@ -183,17 +202,13 @@ not_found() {
 # never taken for an absent tag.
 resolve() {
   local digest errors="${SCRATCH}/resolve.err"
-  if ! digest="$("${ORAS}" resolve "$1" 2>"${errors}")"; then
+  if ! digest="$("${ORAS}" resolve "${ORAS_TLS[@]}" "$1" 2>"${errors}")"; then
     not_found "${errors}" && return 1
     fail "cannot resolve $1: $(head -c 1000 "${errors}" | tr '\n' ' ')"
   fi
   is_digest "${digest}" || fail "$1 resolves to an unexpected value: ${digest}"
   printf '%s\n' "${digest}"
 }
-
-# Curl's retry policy for the platform's own endpoints: transient failures (timeouts,
-# connection refused, 408, 429, 5xx) are retried with a pause, honouring Retry-After.
-readonly CURL_RETRY=(--retry 5 --retry-delay 2 --retry-connrefused --retry-max-time 90)
 
 # Asks the Actions token service for an OIDC token for the audience $1 and writes it to
 # the file $2. The request credential goes to curl on stdin, not on its command line.
@@ -294,11 +309,12 @@ publish_commit() {
     || fail "the minted token does not attest ${pushed}"
   registry_login
   # oras refuses absolute file paths, so it attaches from the directory holding the token.
-  (cd "${SCRATCH}" && "${ORAS}" attach --no-tty --artifact-type "${ATTESTATION_TYPE}" \
+  (cd "${SCRATCH}" && "${ORAS}" attach "${ORAS_TLS[@]}" --no-tty --artifact-type "${ATTESTATION_TYPE}" \
     "${REPO}@${pushed}" "ci-oidc.jwt:${ATTESTATION_TYPE}" >/dev/null) \
     || fail "attaching the attestation to ${REPO}@${pushed} failed"
   emit "${IMAGE}" "${pushed}"
 }
 
 install_oras
+oras_trust
 publish_commit "$@"
