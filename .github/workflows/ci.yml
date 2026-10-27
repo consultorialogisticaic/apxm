@@ -2,7 +2,9 @@ name: apxm-ci
 
 # Runs only on a push to main, on the platform's VPS runners. Nothing is stored on
 # GitHub: no artifact upload, no Actions cache, no GHCR, no Release. Pull requests are
-# checked locally with `dekk agents ci`, the same command this workflow runs.
+# checked locally with `dekk agents ci`. This workflow runs the fast check on each batched
+# push; the long-running suites (MLIR compiler tests, CLI build, frontends, source port,
+# qualification, release cohort) run in nightly.yml.
 on:
   push:
     branches: [main]
@@ -53,11 +55,11 @@ jobs:
       - name: Validate the locked Nix environment
         run: nix --option max-jobs 1 --option cores 1 flake check --all-systems --no-update-lock-file
 
-      # The one entry point: the same command a developer runs locally.
-      - name: Run the full CI check
+      # The service gate without the long-running suites (HEAVY_SERVICE_COMMANDS).
+      - name: Run the fast CI check
         env:
           APXM_COMMIT_LINT_RANGE: ${{ github.event.before && format('{0}..{1}', github.event.before, github.sha) || '' }}
-        run: nix --option max-jobs 1 --option cores 1 develop --command dekk agents ci
+        run: nix --option max-jobs 1 --option cores 1 develop --command dekk agents check-service-fast
 
   # Builds the service images, then publishes each to the platform registry as
   # ci/<workload>/<service>:<sha> and attests it, through the platform's publish helper

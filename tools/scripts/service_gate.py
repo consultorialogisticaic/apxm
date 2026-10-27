@@ -73,6 +73,21 @@ SERVICE_GATE_COMMANDS: tuple[str, ...] = (
     "commit-lint",
 )
 
+#: The long-running suites: the source-port conformance (one frontend interpreter per
+#: case), both frontends and the native builds `test-execution` needs, and the two
+#: qualification suites that build and package releases. The batched push check skips
+#: them (`--fast`); the nightly run executes the whole gate. They depend on one another
+#: and on `test-compilation-service` (which installs the locked frontend packages), so
+#: they are skipped or run together, never one at a time.
+HEAVY_SERVICE_COMMANDS: tuple[str, ...] = (
+    "test-source-port",
+    "test-execution",
+    "test-python-frontend",
+    "test-typescript-frontend",
+    "test-release-qualification",
+    "test-owner-qualification",
+)
+
 #: `commit-lint` is the one step that takes an argument. `--range` when the
 #: caller supplies one (a pull request's base..head), `--current` otherwise.
 COMMIT_LINT_COMMAND = "commit-lint"
@@ -196,6 +211,11 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     parser.add_argument(
+        "--fast",
+        action="store_true",
+        help="omit the long-running suites (HEAVY_SERVICE_COMMANDS); the nightly run omits this flag",
+    )
+    parser.add_argument(
         "--list",
         action="store_true",
         help="print the resolved steps without running them",
@@ -205,7 +225,7 @@ def main(argv: list[str] | None = None) -> int:
     steps = resolve_steps(
         load_commands(),
         commit_lint_range=args.commit_lint_range,
-        skip=tuple(args.skip),
+        skip=(*args.skip, *(HEAVY_SERVICE_COMMANDS if args.fast else ())),
     )
     if args.list:
         for name, run in steps:

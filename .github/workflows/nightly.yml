@@ -1,0 +1,47 @@
+name: apxm-nightly
+
+# The long-running suites, once a night, on the platform's VPS runners: the service gate
+# with the source-port, frontend and qualification suites, the MLIR compiler tests, the
+# CLI release build, and the release cohort. It is the same command a developer runs
+# locally (`dekk agents ci`). The batched push check (ci.yml) skips these suites. Nothing
+# is stored on GitHub and nothing is published from here.
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# One nightly at a time, never cancelled: a cancelled run would hide the night's result.
+concurrency:
+  group: apxm-nightly-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  heavy:
+    # The pool is named by the repository variable CI_POOL_LABEL, the same label as the
+    # push check. The job mints no token, so it holds no `id-token` permission.
+    runs-on: ${{ vars.CI_POOL_LABEL }}
+    timeout-minutes: 360
+    permissions:
+      contents: read
+    env:
+      APXM_CAPTURE_CONFINEMENT: enforce
+      UV_CACHE_DIR: /var/cache/ci/uv
+      npm_config_cache: /var/cache/ci/npm
+      CARGO_HOME: /var/cache/ci/cargo
+      SCCACHE_DIR: /var/cache/ci/sccache
+      CARGO_BUILD_JOBS: 2
+      CARGO_INCREMENTAL: 0
+      RUST_TEST_THREADS: 1
+    steps:
+      - name: Checkout exact event revision
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Run the full CI check
+        run: nix --option max-jobs 1 --option cores 1 develop --command dekk agents ci

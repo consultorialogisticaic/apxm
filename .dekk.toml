@@ -119,6 +119,7 @@ test-all = { run = "python tools/scripts/cargo.py test --workspace --features ap
 # verbatim, with the MLIR toolchain variables unset, so it cannot drift from the
 # suites the MLIR job runs. This is the whole service CI job.
 check-service = { run = "python tools/scripts/service_gate.py", description = "Run every gate that needs no MLIR toolchain (services, protocols, frontends, qualification)", skill = true, group = "Build & Test" }
+check-service-fast = { run = "python tools/scripts/service_gate.py --fast", description = "Run the service gate without the long-running suites (the batched push check); the nightly run and `ci` run them", group = "Build & Test" }
 install-service = { run = "python tools/scripts/service_env.py", description = "Provision the service-only toolchain (Python, Node, uv, git) without MLIR, libclang, CMake or Ninja", group = "Configuration" }
 ci = { run = "python tools/scripts/ci.py", description = "Run the full CI check locally: service gate, MLIR compiler tests and CLI build, then the release cohort (the one entry point CI calls)", group = "Build & Test" }
 test-ci = { run = "python -m unittest tools.tests.test_ci", description = "Validate the ci command steps and the CI workflow policy (VPS-only, no GitHub storage, OIDC scoping)", group = "Build & Test" }

@@ -17,6 +17,7 @@ from pathlib import Path
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 CI_PATH = REPOSITORY_ROOT / "tools" / "scripts" / "ci.py"
 WORKFLOW = REPOSITORY_ROOT / ".github" / "workflows" / "ci.yml"
+NIGHTLY = REPOSITORY_ROOT / ".github" / "workflows" / "nightly.yml"
 PUBLISH = REPOSITORY_ROOT / ".github" / "scripts" / "publish" / "publish.sh"
 DEKK_MANIFEST_PATH = REPOSITORY_ROOT / ".dekk.toml"
 
@@ -100,8 +101,10 @@ class WorkflowPolicyTests(unittest.TestCase):
         self.assertIn("cancel-in-progress: false", self.code)
         self.assertNotIn("cancel-in-progress: true", self.code)
 
-    def test_the_workflow_calls_the_one_local_entry_point(self) -> None:
-        self.assertIn("dekk agents ci", self.code)
+    def test_the_push_workflow_runs_the_fast_check_and_not_the_heavy_suites(self) -> None:
+        self.assertIn("dekk agents check-service-fast", self.code)
+        self.assertNotRegex(self.code, r"dekk agents ci\b")
+        self.assertNotIn("schedule:", self.code)
 
     def test_id_token_is_granted_per_job_and_never_at_the_top_level(self) -> None:
         top = self.code.split("jobs:")[0]
@@ -141,6 +144,59 @@ class WorkflowPolicyTests(unittest.TestCase):
     def test_actions_are_pinned_to_a_commit(self) -> None:
         for use in re.findall(r"uses: (\S+)", self.code):
             self.assertRegex(use, r"@[0-9a-f]{40}$")
+
+
+class NightlyWorkflowPolicyTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.text = NIGHTLY.read_text(encoding="utf-8")
+        cls.code = "\n".join(
+            line for line in cls.text.splitlines() if not line.lstrip().startswith("#")
+        )
+
+    def test_runs_on_a_schedule_and_on_demand_never_on_pull_requests(self) -> None:
+        self.assertRegex(self.code, r"schedule:\n\s+- cron: ")
+        self.assertIn("workflow_dispatch:", self.code)
+        for forbidden in ("pull_request", "push:"):
+            self.assertNotIn(forbidden, self.code)
+
+    def test_runs_the_whole_ci_check_on_the_shared_pool_without_a_token(self) -> None:
+        self.assertIn("runs-on: ${{ vars.CI_POOL_LABEL }}", self.code)
+        self.assertRegex(self.code, r"dekk agents ci\b")
+        self.assertNotIn("id-token", self.code)
+        self.assertIn("contents: read", self.code)
+        self.assertNotIn("publish", self.code)
+
+    def test_a_run_is_never_cancelled_and_its_group_differs_from_the_push_check(self) -> None:
+        self.assertIn("cancel-in-progress: false", self.code)
+        self.assertIn("group: apxm-nightly", self.code)
+
+    def test_stores_nothing_on_github_and_pins_actions(self) -> None:
+        for forbidden in ("upload-artifact", "actions/cache", "ghcr.io", "ubuntu-latest", "secrets."):
+            self.assertNotIn(forbidden, self.code)
+        for use in re.findall(r"uses: (\S+)", self.code):
+            self.assertRegex(use, r"@[0-9a-f]{40}$")
+
+    def test_the_heavy_suites_are_a_subset_of_the_gate_and_the_fast_check_is_declared(self) -> None:
+        spec = importlib.util.spec_from_file_location(
+            "gate_for_nightly", CI_PATH.with_name("service_gate.py")
+        )
+        gate = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = gate
+        spec.loader.exec_module(gate)
+        for name in gate.HEAVY_SERVICE_COMMANDS:
+            self.assertIn(name, gate.SERVICE_GATE_COMMANDS)
+        fast = [n for n, _ in gate.resolve_steps(
+            gate.load_commands(), skip=gate.HEAVY_SERVICE_COMMANDS)]
+        self.assertNotIn("test-source-port", fast)
+        self.assertIn("clippy", fast)
+        self.assertIn("commit-lint", fast)
+        with DEKK_MANIFEST_PATH.open("rb") as handle:
+            commands = tomllib.load(handle)["commands"]
+        self.assertEqual(
+            commands["check-service-fast"]["run"], "python tools/scripts/service_gate.py --fast"
+        )
+        self.assertIn("check-service", load_ci().CI_COMMANDS)
 
 
 if __name__ == "__main__":
