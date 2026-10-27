@@ -49,6 +49,13 @@
         let
           pkgs = pkgsFor system;
           llvm = pkgs.llvmPackages;
+          # nixpkgs splits MLIR and LLVM across outputs (cmake config in `dev`, mlir-tblgen
+          # in `tblgen`). The build scripts expect one prefix holding bin, lib, include and
+          # lib/cmake, so the cached outputs are symlinked together; nothing is compiled.
+          llvmToolchain = pkgs.symlinkJoin {
+            name = "llvm-mlir-${llvm.mlir.version}";
+            paths = [ llvm.mlir llvm.mlir.dev llvm.llvm llvm.llvm.dev llvm.tblgen ];
+          };
           rust = pkgs.rust-bin.fromRustupToolchainFile ./rust-toolchain.toml;
           python = pkgs.python312.withPackages (packages: [
             packages.pip
@@ -77,19 +84,20 @@
             llvm.clang
             llvm.libclang
             llvm.mlir
+            llvmToolchain
             llvm.llvm
           ];
 
           env = {
             UV_PYTHON_DOWNLOADS = "never";
-            MLIR_DIR = "${llvm.mlir}/lib/cmake/mlir";
-            LLVM_DIR = "${llvm.llvm.dev}/lib/cmake/llvm";
-            MLIR_PREFIX = "${llvm.mlir}";
-            LLVM_PREFIX = "${llvm.llvm}";
+            MLIR_DIR = "${llvmToolchain}/lib/cmake/mlir";
+            LLVM_DIR = "${llvmToolchain}/lib/cmake/llvm";
+            MLIR_PREFIX = "${llvmToolchain}";
+            LLVM_PREFIX = "${llvmToolchain}";
             LIBCLANG_PATH = "${llvm.libclang.lib}/lib";
             CC = "${llvm.clang}/bin/clang";
             CXX = "${llvm.clang}/bin/clang++";
-            LD_LIBRARY_PATH = "${llvm.llvm}/lib:${llvm.libclang.lib}/lib";
+            LD_LIBRARY_PATH = "${llvmToolchain}/lib:${llvm.libclang.lib}/lib";
             PKG_CONFIG_PATH = "${pkgs.openssl.dev}/lib/pkgconfig";
           } // pkgs.lib.optionalAttrs (system == "x86_64-linux") {
             CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER = "${llvm.clang}/bin/clang";
