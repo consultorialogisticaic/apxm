@@ -17,7 +17,7 @@ from pathlib import Path
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 CI_PATH = REPOSITORY_ROOT / "tools" / "scripts" / "ci.py"
 WORKFLOW = REPOSITORY_ROOT / ".github" / "workflows" / "ci.yml"
-ATTEST = REPOSITORY_ROOT / ".github" / "scripts" / "attest-image.sh"
+PUBLISH = REPOSITORY_ROOT / ".github" / "scripts" / "publish" / "publish.sh"
 DEKK_MANIFEST_PATH = REPOSITORY_ROOT / ".dekk.toml"
 
 
@@ -106,26 +106,41 @@ class WorkflowPolicyTests(unittest.TestCase):
     def test_id_token_is_granted_per_job_and_never_at_the_top_level(self) -> None:
         top = self.code.split("jobs:")[0]
         self.assertNotIn("id-token", top)
-        self.assertEqual(len(re.findall(r"id-token: write", self.code)), 2)
+        check, image = self.code.split("  image:")
+        self.assertNotIn("id-token", check)
+        self.assertEqual(len(re.findall(r"id-token: write", image)), 1)
+        self.assertEqual(len(re.findall(r"contents: read", self.code)), 3)
 
     def test_only_the_publishing_job_publishes_and_only_from_main(self) -> None:
         check, image = self.code.split("  image:")
-        self.assertNotIn("push-image", check)
-        self.assertNotIn("attest-image", check)
+        self.assertNotIn("publish", check.replace("Publishing", ""))
         self.assertIn("github.event_name == 'push' && github.ref == 'refs/heads/main'", image)
-        self.assertIn("runs-on: [apxm]", image)
-        self.assertIn("runs-on: [pool-shared]", check)
+        self.assertEqual(image.count(".github/scripts/publish/publish.sh"), 1)
+
+    def test_labels_and_prefix_come_from_repository_variables(self) -> None:
+        self.assertIn("runs-on: ${{ vars.CI_POOL_LABEL }}", self.code)
+        self.assertIn("runs-on: ${{ vars.CI_PUBLISH_LABEL }}", self.code)
+        self.assertIn("AUDIENCE_PREFIX: ${{ vars.CI_AUDIENCE_PREFIX }}", self.code)
+        self.assertNotRegex(self.code, r"runs-on: \[")
+
+    def test_publishing_goes_through_the_helper_with_its_contract_inputs(self) -> None:
+        for name in ("WORKLOAD", "AUDIENCE_PREFIX", "CI_WORKFLOW", "ORAS_VERSION", "ORAS_SHA256"):
+            self.assertRegex(self.code, rf"(?m)^\s+{name}: ")
+        for forbidden in ("DEPLOY_KEY", "deploy-key", "ssh-key", "secrets.", "docker push"):
+            self.assertNotIn(forbidden, self.text)
+        scripts = REPOSITORY_ROOT / ".github" / "scripts"
+        self.assertEqual(sorted(p.name for p in scripts.iterdir()), ["publish"])
+
+    def test_the_vendored_helper_attests_and_retries_the_platform_calls(self) -> None:
+        script = PUBLISH.read_text(encoding="utf-8")
+        self.assertIn("application/vnd.hostplane.ci-oidc.v1+jwt", script)
+        self.assertIn("::add-mask::", script)
+        self.assertIn("--retry-connrefused", script)
+        self.assertIn("RELEASE_BRANCH_REF:-refs/heads/main", script)
 
     def test_actions_are_pinned_to_a_commit(self) -> None:
         for use in re.findall(r"uses: (\S+)", self.code):
             self.assertRegex(use, r"@[0-9a-f]{40}$")
-
-    def test_attestation_script_is_main_push_only_and_pins_oras(self) -> None:
-        script = ATTEST.read_text(encoding="utf-8")
-        self.assertIn("refs/heads/main", script)
-        self.assertIn("application/vnd.hostplane.ci-oidc.v1+jwt", script)
-        self.assertRegex(script, r"ORAS_SHA256_AMD64=[0-9a-f]{64}")
-        self.assertIn("::add-mask::", script)
 
 
 if __name__ == "__main__":

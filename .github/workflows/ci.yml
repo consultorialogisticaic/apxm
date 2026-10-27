@@ -22,15 +22,14 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  # `pool-shared` is the shared pool label (an unprivileged ~2 GiB Incus container with
-  # no registry credential). `id-token: write` is there only so the platform can commit
-  # the build caches on the default branch; this job never publishes.
+  # The check pool is named by the repository variable CI_POOL_LABEL, the label the site
+  # declares for its shared pool (an unprivileged container with no registry route). The job
+  # mints no token, so it holds no `id-token` permission.
   check:
-    runs-on: [pool-shared]
+    runs-on: ${{ vars.CI_POOL_LABEL }}
     timeout-minutes: 240
     permissions:
       contents: read
-      id-token: write
     env:
       APXM_CAPTURE_CONFINEMENT: enforce
       # The pool's persistent caches (see the measurements in the pull request).
@@ -60,20 +59,23 @@ jobs:
           APXM_COMMIT_LINT_RANGE: ${{ github.event.before && format('{0}..{1}', github.event.before, github.sha) || '' }}
         run: nix --option max-jobs 1 --option cores 1 develop --command dekk agents ci
 
-  # Builds the service images and publishes them to the platform registry (zot) as
-  # ci/apxm/<service>:<sha>, then attaches the OIDC proof of origin. Pool runners have no
-  # route to the registry, so this runs on the publishing label, `apxm`.
+  # Builds the service images, then publishes each to the platform registry as
+  # ci/<workload>/<service>:<sha> and attests it, through the platform's publish helper
+  # (vendored in .github/scripts/publish). The runner holds no registry credential: the
+  # helper proves the job to the registry token exchange with an OIDC token whose audience
+  # is <prefix>:<site>:publish, and attests each digest with <prefix>:<digest>. The pool is
+  # named by CI_PUBLISH_LABEL, a pool the site declares as publishing; the audience prefix is
+  # CI_AUDIENCE_PREFIX. Both are repository variables, never values in this file.
   image:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: check
-    runs-on: [apxm]
+    runs-on: ${{ vars.CI_PUBLISH_LABEL }}
     timeout-minutes: 240
     permissions:
       contents: read
       id-token: write
     env:
       APXM_CAPTURE_CONFINEMENT: enforce
-      AUDIENCE_PREFIX: ${{ vars.CI_AUDIENCE_PREFIX }}
       CARGO_BUILD_JOBS: 2
       CARGO_INCREMENTAL: 0
     steps:
@@ -102,10 +104,21 @@ jobs:
             python -m json.tool image-evidence-verification.json >/dev/null
           '
 
-      - name: Push the verified images and attach the proof of origin
+      # The helper rebuilds each verified image from its cached layers, pushes it once under
+      # ci/<workload>/<service>:<sha>, and attaches the proof of origin to the pushed digest.
+      - name: Publish the verified images and attest their digests
+        env:
+          WORKLOAD: apxm
+          AUDIENCE_PREFIX: ${{ vars.CI_AUDIENCE_PREFIX }}
+          CI_WORKFLOW: .github/workflows/ci.yml
+          ORAS_VERSION: "1.3.6"
+          ORAS_SHA256: 66fb0ad7206f3f6fa77ed5b552049d364ccf4b50b1684554f731f76302b52ca0
         run: |
           for service in compilation-service runtime-service; do
-            digest=$(.github/scripts/push-image.sh "$service" "apxm/$service:${GITHUB_SHA::8}")
-            .github/scripts/attest-image.sh "$service" "$digest"
-            echo "$service $digest"
+            mapfile -t build_arguments < <(
+              nix --option max-jobs 1 --option cores 1 develop --command \
+                dekk agents publish-arguments --service "$service" --platform linux/amd64
+            )
+            ARTIFACT="$service" CONTAINERFILE="deploy/Dockerfile.$service" \
+              .github/scripts/publish/publish.sh "${build_arguments[@]}"
           done
