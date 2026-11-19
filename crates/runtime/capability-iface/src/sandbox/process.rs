@@ -39,8 +39,11 @@ impl ProcessSandbox {
         args: &[&str],
         stdin_data: Option<&str>,
     ) -> std::io::Result<SandboxResult> {
-        if let Some(allowed_commands) = &self.policy.allowed_commands
-            && !allowed_commands.iter().any(|allowed| allowed == command)
+        if !self
+            .policy
+            .allowed_commands
+            .iter()
+            .any(|allowed| allowed == command)
         {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::PermissionDenied,
@@ -266,6 +269,7 @@ mod tests {
         ProcessSandbox::new(SandboxPolicy {
             timeout,
             max_output_bytes,
+            allowed_commands: vec!["sh".to_string()],
             ..SandboxPolicy::default()
         })
     }
@@ -323,5 +327,17 @@ mod tests {
             .expect("a timed-out process returns a result");
 
         assert!(result.timed_out);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn default_policy_denies_every_command() {
+        let sandbox = ProcessSandbox::with_default_policy();
+        let err = sandbox
+            .execute("sh", &["-c", "true"], None)
+            .await
+            .expect_err("an empty allowlist must block execution");
+
+        assert_eq!(err.kind(), std::io::ErrorKind::PermissionDenied);
     }
 }

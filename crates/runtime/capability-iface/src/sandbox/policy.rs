@@ -10,8 +10,9 @@ pub struct SandboxPolicy {
     pub timeout: Duration,
     /// Maximum bytes to capture from stdout+stderr.
     pub max_output_bytes: usize,
-    /// If set, only these commands/interpreters are allowed.
-    pub allowed_commands: Option<Vec<String>>,
+    /// Commands/interpreters allowed to run. Deny by default: an empty list
+    /// permits nothing, so callers must opt in explicitly.
+    pub allowed_commands: Vec<String>,
     /// Environment variables to remove before execution.
     pub blocked_env_vars: Vec<String>,
     /// Additional environment variables to inject after the safe baseline.
@@ -25,7 +26,7 @@ impl Default for SandboxPolicy {
         Self {
             timeout: sandbox_limits::DEFAULT_TIMEOUT,
             max_output_bytes: sandbox_limits::DEFAULT_MAX_OUTPUT_BYTES,
-            allowed_commands: None,
+            allowed_commands: Vec::new(),
             blocked_env_vars: sandbox_env::BLOCKED_DEFAULTS
                 .iter()
                 .map(|key| (*key).to_string())
